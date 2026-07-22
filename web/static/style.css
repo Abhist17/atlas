@@ -138,6 +138,21 @@ header{
 .why-txt{font-size:11.5px; line-height:1.45}
 .why-txt .f{font-weight:600}
 .why-txt .d{color:var(--sub)}
+.bt{border-top:1px solid var(--line)}
+.bt-bar{display:flex; align-items:center; gap:8px; padding:10px 15px}
+.bt-h{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--faint); flex:1}
+.bt-bar select{border:1px solid var(--line-2); border-radius:6px; padding:4px 7px; font-size:11.5px; background:var(--bg); color:var(--ink)}
+.bt-bar button{border:1px solid var(--ink); background:var(--ink); color:#fff; border-radius:6px; padding:5px 14px; font-size:12px; font-weight:600; cursor:pointer}
+.bt-bar button:hover{opacity:.88}
+.bt-bar button:disabled{opacity:.5; cursor:default}
+.bt-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:1px; background:var(--line); border-top:1px solid var(--line)}
+.bt-stat{background:var(--panel); padding:9px 12px}
+.bt-stat .bl{font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:var(--faint)}
+.bt-stat .bv{font-size:15px; font-weight:700; font-variant-numeric:tabular-nums; margin-top:2px}
+.bt-stat .bv.up{color:var(--up)} .bt-stat .bv.down{color:var(--down)}
+.bt-eq{display:block; width:100%; height:54px; margin:2px 0}
+.bt-note{font-size:10.5px; color:var(--faint); padding:6px 15px 10px; line-height:1.5}
+
 .plan-note{font-size:10.5px; color:var(--faint); padding:8px 15px; border-top:1px solid var(--line)}
 
 .chain-table{width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums}

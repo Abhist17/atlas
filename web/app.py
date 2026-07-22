@@ -131,6 +131,13 @@ async def api_levels(symbol: str, email: str = Depends(require_user)):
     return JSONResponse(compute_levels(symbol))
 
 
+@app.get("/api/backtest")
+async def api_backtest(symbol: str, days: int = 30, target_r: float = 2.0,
+                       email: str = Depends(require_user)):
+    from engine.backtest_signal import backtest_symbol
+    return JSONResponse(backtest_symbol(symbol, days=days, target_r=target_r))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("web.app:app", host="0.0.0.0", port=8000, reload=False)

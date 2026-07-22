@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Atlas — Trading Terminal</title>
+  <title>Atlas</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -201,8 +201,60 @@
       <div class="tps">${tps}</div>
       <div class="why"><div class="why-h">Why this ${p.bias} bias</div>${why}</div>
       <div class="plan-lvls">${lvls}</div>
+      <div class="bt">
+        <div class="bt-bar">
+          <span class="bt-h">Backtest this strategy</span>
+          <select id="btDays"><option value="15">15d</option><option value="30" selected>30d</option><option value="60">60d</option></select>
+          <select id="btR"><option value="1">1R</option><option value="1.5">1.5R</option><option value="2" selected>2R</option><option value="3">3R</option></select>
+          <button id="btRun">Run</button>
+        </div>
+        <div id="btOut"></div>
+      </div>
       <div class="plan-note">${p.note}</div>
     </div>`;
+    document.getElementById("btRun").onclick=runBacktest;
+  }
+
+  // ---------------- backtest ----------------
+  async function runBacktest(){
+    if(!selSym) return;
+    const days=document.getElementById("btDays").value, r=document.getElementById("btR").value;
+    const out=document.getElementById("btOut");
+    const btn=document.getElementById("btRun"); btn.disabled=true; btn.textContent="…";
+    out.innerHTML=`<div class="bt-note">Replaying ${days}d of 5-min bars…</div>`;
+    let d;
+    try{ d=await (await fetch(`/api/backtest?symbol=${selSym}&days=${days}&target_r=${r}`)).json(); }
+    catch(e){ out.innerHTML=`<div class="bt-note">Backtest failed.</div>`; btn.disabled=false; btn.textContent="Run"; return; }
+    btn.disabled=false; btn.textContent="Run";
+    if(!d.ok){ out.innerHTML=`<div class="bt-note">${d.error||"No result."}</div>`; return; }
+    if(!d.trades){ out.innerHTML=`<div class="bt-note">${d.note||"No trades."}</div>`; return; }
+    const pos=d.total_r>=0;
+    const stat=(l,v,cls="")=>`<div class="bt-stat"><div class="bl">${l}</div><div class="bv ${cls}">${v}</div></div>`;
+    out.innerHTML=`
+      <div class="bt-grid">
+        ${stat("Net R", (pos?"+":"")+d.total_r, pos?"up":"down")}
+        ${stat("Win rate", d.win_rate+"%")}
+        ${stat("Trades", d.trades)}
+        ${stat("Profit factor", d.profit_factor??"—", (d.profit_factor>=1?"up":"down"))}
+        ${stat("Avg R / trade", (d.avg_r>=0?"+":"")+d.avg_r, d.avg_r>=0?"up":"down")}
+        ${stat("Best / Worst", `+${d.best_r} / ${d.worst_r}`)}
+      </div>
+      ${equitySVG(d.equity, pos)}
+      <div class="bt-note">${d.wins}W / ${d.losses}L · exits at ${r}R target or 1.5·ATR stop, intraday square-off. Honest replay of the live signal — no look-ahead.</div>`;
+  }
+  function equitySVG(eq, pos){
+    if(!eq||eq.length<2) return "";
+    const w=268,h=54,pad=3;
+    const mn=Math.min(0,...eq), mx=Math.max(0,...eq), rng=(mx-mn)||1;
+    const x=i=>pad+i*(w-2*pad)/(eq.length-1);
+    const y=v=>h-pad-(v-mn)/rng*(h-2*pad);
+    const pts=eq.map((v,i)=>`${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+    const zero=y(0).toFixed(1);
+    const col=pos?"var(--up)":"var(--down)";
+    return `<svg class="bt-eq" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+      <line x1="0" y1="${zero}" x2="${w}" y2="${zero}" stroke="var(--line-2)" stroke-dasharray="3 3"/>
+      <polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1.6"/>
+    </svg>`;
   }
 
   // ---------------- option projection ----------------

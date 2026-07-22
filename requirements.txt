@@ -1,0 +1,23 @@
+# Core data / compute
+pandas
+numpy
+pyarrow
+pandas-ta
+numba
+
+# Broker + data (Dhan)
+dhanhq
+requests
+tenacity
+websockets
+
+# Scheduling
+APScheduler
+
+# Dashboard
+streamlit
+plotly
+
+# Config
+pyyaml
+python-dotenv

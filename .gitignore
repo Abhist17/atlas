@@ -1,0 +1,25 @@
+# Secrets & env
+.env
+config/secrets.yaml
+*.key
+
+# Python
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Data & cache (do not commit market data)
+data_store/cache/
+data_store/*.parquet
+*.parquet
+logs/*.log
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Claude local settings
+.claude/

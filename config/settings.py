@@ -45,11 +45,11 @@ class ScreenerConfig:
     # Cap the universe while developing; raise later.
     max_universe: int = 200
 
-    # Liquidity / tradability filters
+    # Liquidity / tradability filters (calibrated for 5-minute bars)
     min_price: float = 50.0
     max_price: float = 5000.0
-    min_avg_volume: int = 200_000      # shares/day
-    min_atr_pct: float = 1.0           # min intraday volatility (ATR as % of price)
+    min_avg_volume: int = 20_000       # avg shares per 5-min bar (rolling 20)
+    min_atr_pct: float = 0.20          # min per-bar volatility (ATR as % of price)
 
     # Momentum thresholds (screener rules)
     rsi_lower: float = 55.0

@@ -11,19 +11,19 @@ from typing import Callable
 import pandas as pd
 
 from config.settings import ScreenerConfig, config
-from data.dhan_client import dhan
 from data.instruments import load_nse_equities
+from data.yf_client import yfc
 from engine.indicators import add_indicators
 from utils.logger import get_logger
 
 log = get_logger("engine.screener")
 
-# A fetcher maps security_id -> OHLCV DataFrame. Injectable for tests/backtest.
+# A fetcher maps a trading symbol -> OHLCV DataFrame. Injectable for tests.
 Fetcher = Callable[[str], pd.DataFrame]
 
 
-def _default_fetcher(security_id: str) -> pd.DataFrame:
-    return dhan.recent_intraday(security_id, days=5, interval=5)
+def _default_fetcher(symbol: str) -> pd.DataFrame:
+    return yfc.intraday(symbol, days=5, interval=5)
 
 
 def _passes(row: pd.Series, cfg: ScreenerConfig) -> bool:
@@ -64,7 +64,7 @@ def screen(
     rows = []
     for rec in universe.itertuples(index=False):
         try:
-            df = fetcher(rec.security_id)
+            df = fetcher(rec.symbol)
             if df is None or len(df) < 21:  # need enough bars for indicators
                 continue
             last = add_indicators(df).iloc[-1]

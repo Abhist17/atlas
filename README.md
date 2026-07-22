@@ -1,39 +1,56 @@
 # Atlas
 
-Intraday stock screening + trading engine for NSE equities via the
-[Dhan](https://dhanhq.co/) API. Atlas screens a stock universe each session
-using technical filters, then trades the shortlisted candidates — starting in
-**paper-trading mode** before going live.
+Free intraday **options scanner + discipline tool** for NSE F&O trading.
 
-## Pipeline
+Atlas watches every liquid F&O underlying (NIFTY, BANKNIFTY, and 24 stocks) in
+real time, flags high-conviction directional setups (CALL / PUT), journals every
+signal and trade, and enforces risk discipline — so you trade *your* edge with
+more reach and honest feedback.
 
-```
-Universe → Screener → Signals → Execution (paper/live) → Risk mgmt → Dashboard
-                                                              ↑
-                                                   Backtest (validate on history)
-```
+> **Honest note:** Extensive backtesting showed that simple technical signals do
+> *not* reliably predict short-term direction (see `backtest/`). Atlas is a
+> **decision-support and discipline tool**, not an automated money-maker. The
+> edge stays with your judgment; Atlas gives you reach, journaling, and risk
+> control. Options carry theta decay + direction risk — trade carefully.
 
-## Modules
+## What it does
 
-| Module        | Role                                                        |
-|---------------|-------------------------------------------------------------|
-| `config/`     | Settings, credentials (env), strategy/risk parameters       |
-| `data/`       | Dhan data feed — instruments, OHLCV, live quotes; Parquet cache |
-| `engine/`     | Screener + strategy signals + order execution               |
-| `backtest/`   | Historical replay + quant metrics (Sharpe, drawdown, etc.)  |
-| `storage/`    | Trade log / portfolio persistence                           |
-| `dashboard/`  | Streamlit UI — candidates, positions, P&L                   |
-| `utils/`      | Logging, shared helpers                                     |
+- **Live scanner** — scans all F&O underlyings every 5 min, ranks setups by
+  directional conviction (trend + VWAP + RSI + opening-range breakout + volume)
+- **CALL/PUT signals** — signed conviction tells you which side + why (factors)
+- **Trade journal** — logs every signal and trade to disk; shows your *real* win rate
+- **Risk engine** — position sizing, stop/target, daily loss kill-switch, square-off
+- **Backtester** — no-look-ahead replay with realistic costs + quant metrics
+- **Dashboard** — Streamlit live view of setups, P&L, and signal history
 
-## Setup
+## Quickstart
 
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in Dhan credentials
+cp .env.example .env          # optional: Dhan creds for future order execution
+
+python -m engine.scanner              # one-off scan of current setups
+python -m engine.runner --once        # single scan + journal
+python -m engine.runner               # scheduled loop through market hours
+streamlit run dashboard/app.py        # live dashboard
+
+python -m backtest.directional_bt     # validate the directional engine
 ```
 
-## Status
+## Modules
 
-🚧 Under active development. Currently: foundation + data feed.
-Mode defaults to **paper trading** (`ATLAS_MODE=paper`).
+| Module        | Role                                                          |
+|---------------|---------------------------------------------------------------|
+| `config/`     | Settings, Dhan creds (env), screener/risk params              |
+| `data/`       | yfinance data feed, NSE universe, F&O underlyings, Dhan client |
+| `engine/`     | Indicators, strategies, ensemble, directional engine, scanner, runner, paper trader, costs |
+| `backtest/`   | Backtest engines, quant metrics, parameter optimizer          |
+| `storage/`    | Trade + signal journal (Parquet)                              |
+| `dashboard/`  | Streamlit UI                                                  |
+| `utils/`      | Logging                                                        |
+
+## Data
+
+Free market data via **yfinance** (NSE). Dhan is reserved for order execution.
+Options-chain / OI / IV data would require Dhan's paid Data API — not used here.

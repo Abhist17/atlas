@@ -53,43 +53,18 @@
 
     <!-- ============ TICKET + POSITIONS ============ -->
     <div class="col">
-      <div class="ticket hidden" id="ticket">
-        <div class="t-inst" id="tInst">—</div>
-        <div class="t-sub" id="tSub"></div>
-        <div class="toggle">
-          <button data-mode="paper" class="on" id="mPaper">Paper</button>
-          <button data-mode="live" id="mLive">Live</button>
+      <h2>Option projection</h2>
+      <div class="proj-empty" id="projEmpty">Click a Call or Put in the chain to see its premium projected at the plan's stop &amp; targets.</div>
+      <div class="proj" id="proj" style="display:none">
+        <div class="proj-head">
+          <div class="proj-inst" id="pjInst">—</div>
+          <div class="proj-sub" id="pjSub"></div>
         </div>
-        <div class="bs">
-          <button class="buy on" id="bBuy">BUY</button>
-          <button class="sell" id="bSell">SELL</button>
+        <div class="proj-entry">
+          <span>Entry premium</span><span class="pj-px" id="pjEntry">—</span>
         </div>
-        <div class="field">
-          <label>Lots</label>
-          <div class="stepper">
-            <button id="lMinus">−</button>
-            <input id="lots" value="1" inputmode="numeric">
-            <button id="lPlus">+</button>
-          </div>
-        </div>
-        <div class="summary">
-          <div><span>Lot size</span><span class="val" id="sLot">—</span></div>
-          <div><span>Quantity</span><span class="val" id="sQty">—</span></div>
-          <div><span>Price (LTP)</span><span class="val" id="sPx">—</span></div>
-          <div><span>Order value</span><span class="val" id="sVal">—</span></div>
-        </div>
-        <div class="live-warn" id="liveWarn" style="display:none">⚠ Live mode places a REAL Dhan order with real money.</div>
-        <button class="place" id="place">BUY · PAPER</button>
-        <div id="orderMsg"></div>
-      </div>
-
-      <div class="pos-wrap">
-        <h2>Positions</h2>
-        <div class="pnl-strip">
-          <div class="pnl-box"><div class="l">Open</div><div class="v" id="pOpen">0</div></div>
-          <div class="pnl-box"><div class="l">Realised P&L</div><div class="v" id="pReal">₹0</div></div>
-        </div>
-        <div id="posList"><div class="pos-empty">No open positions.</div></div>
+        <div class="proj-rows" id="pjRows"></div>
+        <div class="proj-note">Premiums estimated with a ~0.5 ATM delta. Actual fills vary with IV &amp; time decay.</div>
       </div>
     </div>
   </div>
@@ -97,8 +72,7 @@
   <script>
   // ---------------- state ----------------
   let rows=[], filter="all", query="", selSym=null, selExpiry=null, chain=null;
-  let leg=null; // {strike, opt_type, ltp, lot}
-  let mode="paper", side="BUY", lots=1;
+  let plan=null, leg=null; // leg = {strike, opt_type, ltp}
   const money = v => "₹"+Number(v).toLocaleString("en-IN",{maximumFractionDigits:2});
 
   // ---------------- screener ----------------
@@ -193,9 +167,11 @@
     let p;
     try{ p=await (await fetch("/api/levels?symbol="+sym)).json(); }catch(e){ wrap.innerHTML=""; return; }
     if(sym!==selSym) return;
-    if(!p.ok){ wrap.innerHTML=`<div class="plan"><div class="plan-note">Trade plan unavailable: ${p.error||""}</div></div>`; return; }
+    if(!p.ok){ wrap.innerHTML=`<div class="plan"><div class="plan-note">Signal unavailable: ${p.error||""}</div></div>`; return; }
+    plan=p; if(leg) renderProjection();
     const long=p.bias==="LONG", dirCls=long?"long":"short", col=long?"up":"down";
     const cf=Math.round(p.confidence*100);
+    const stCls={ENTER:"enter",WAIT:"wait",AVOID:"avoid"}[p.status]||"wait";
     const lvls=Object.entries(p.levels).map(([k,v])=>`<span class="lvl">${k}<b>${v}</b></span>`).join("");
     const tps=p.targets.map(t=>`<div class="tp"><div class="lab">TP${t.rr} · ${t.rr}R</div>
        <div class="px">${t.px}</div><div class="opt">opt +₹${t.opt_gain}</div></div>`).join("");
@@ -205,104 +181,55 @@
         <span class="why-txt"><span class="f">${f.factor}</span> <span class="d">— ${f.text}</span></span></div>`;
     }).join("");
     wrap.innerHTML=`<div class="plan ${dirCls}">
+      <div class="signal ${stCls}">
+        <div class="sig-l"><span class="sig-status">${p.status}</span>
+          <span class="bias-badge ${dirCls}">${p.bias} · ${p.option}</span></div>
+        <div class="sig-head">${p.headline}</div>
+        <div class="sig-trig">▸ ${p.trigger}</div>
+      </div>
       <div class="plan-top">
-        <div class="plan-bias"><span class="bias-badge ${dirCls}">${p.bias}</span>
-          <span class="opt">Buy ${p.option} · ATR ${p.atr} (${p.atr_pct}%)</span></div>
+        <div class="plan-bias"><span class="opt">ATR ${p.atr} (${p.atr_pct}%) · ${p.extension>0?"+":""}${p.extension} ATR from VWAP</span></div>
         <div class="plan-conf">Conviction ${cf}%
           <div class="conf-track"><div class="conf-fill" style="width:${cf}%;background:var(--${col})"></div></div></div>
       </div>
       <div class="plan-grid">
-        <div class="plan-cell"><div class="l">Entry</div><div class="v">${p.entry}</div>
-          <div class="sub">at market / on trigger</div></div>
+        <div class="plan-cell"><div class="l">Entry ${p.status==="ENTER"?"(now)":"(planned)"}</div><div class="v">${p.entry}</div>
+          <div class="sub">${p.status==="ENTER"?"at current price":"when trigger hits"}</div></div>
         <div class="plan-cell"><div class="l">Stop loss</div><div class="v down">${p.stop}</div>
           <div class="sub">${p.risk_pts} pts (${p.risk_pct}%) · opt −₹${p.opt_stop_move}</div></div>
       </div>
       <div class="tps">${tps}</div>
-      <div class="why"><div class="why-h">Why this trade — ${p.bias} basis</div>${why}</div>
+      <div class="why"><div class="why-h">Why this ${p.bias} bias</div>${why}</div>
       <div class="plan-lvls">${lvls}</div>
       <div class="plan-note">${p.note}</div>
     </div>`;
   }
 
-  // ---------------- order ticket ----------------
-  function selectLeg(l){
-    leg=l; document.getElementById("ticket").classList.remove("hidden");
-    document.getElementById("tInst").textContent=`${selSym} ${l.strike} ${l.opt_type}`;
-    document.getElementById("tSub").textContent=`Exp ${selExpiry} · LTP ₹${l.ltp}`;
-    document.getElementById("orderMsg").innerHTML="";
-    updateTicket();
-  }
-  function updateTicket(){
+  // ---------------- option projection ----------------
+  function selectLeg(l){ leg=l; renderProjection(); }
+  function renderProjection(){
     if(!leg) return;
-    const qty=lots*leg.lot, val=qty*leg.ltp;
-    document.getElementById("sLot").textContent=leg.lot;
-    document.getElementById("sQty").textContent=qty;
-    document.getElementById("sPx").textContent="₹"+leg.ltp;
-    document.getElementById("sVal").textContent=money(val);
-    document.getElementById("lots").value=lots;
-    document.getElementById("place").textContent=`${side} · ${mode.toUpperCase()}`;
-    document.getElementById("liveWarn").style.display=mode==="live"?"block":"none";
-  }
-  document.getElementById("mPaper").onclick=()=>setMode("paper");
-  document.getElementById("mLive").onclick=()=>setMode("live");
-  function setMode(m){mode=m;
-    document.getElementById("mPaper").classList.toggle("on",m==="paper");
-    document.getElementById("mLive").classList.toggle("on",m==="live"); updateTicket();}
-  document.getElementById("bBuy").onclick=()=>setSide("BUY");
-  document.getElementById("bSell").onclick=()=>setSide("SELL");
-  function setSide(s){side=s;
-    document.getElementById("bBuy").classList.toggle("on",s==="BUY");
-    document.getElementById("bSell").classList.toggle("on",s==="SELL"); updateTicket();}
-  document.getElementById("lMinus").onclick=()=>{lots=Math.max(1,lots-1);updateTicket();};
-  document.getElementById("lPlus").onclick=()=>{lots++;updateTicket();};
-  document.getElementById("lots").oninput=e=>{lots=Math.max(1,parseInt(e.target.value)||1);updateTicket();};
-
-  document.getElementById("place").onclick=async()=>{
-    if(!leg) return;
-    const btn=document.getElementById("place"); btn.disabled=true;
-    const res=await fetch("/api/order",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({mode,symbol:selSym,expiry:selExpiry,strike:leg.strike,
-        opt_type:leg.opt_type,side,lots,ltp:leg.ltp})});
-    const j=await res.json(); btn.disabled=false;
-    const box=document.getElementById("orderMsg");
-    if(j.ok){ box.innerHTML=`<div class="msg ok">✓ ${side} ${lots} lot(s) placed (${mode}).</div>`; loadPositions(); }
-    else box.innerHTML=`<div class="msg err">✕ ${j.error||"Order failed."}</div>`;
-  };
-
-  // ---------------- positions ----------------
-  async function loadPositions(){
-    const j=await (await fetch("/api/positions")).json();
-    const list=document.getElementById("posList");
-    document.getElementById("pOpen").textContent=j.positions.length;
-    const real=(j.stats&&(j.stats.total_pnl??j.stats.net_pnl))||0;
-    const rEl=document.getElementById("pReal");
-    rEl.textContent=money(real);
-    rEl.className="v "+(real>0?"up":real<0?"down":"");
-    if(!j.positions.length){ list.innerHTML=`<div class="pos-empty">No open positions.</div>`; return; }
-    list.innerHTML=j.positions.map(p=>`<div class="pos">
-      <div class="r1"><span class="p-inst">${p.symbol} ${Math.round(p.strike)} ${p.opt_type}
-        <span class="p-tag ${p.mode}">${p.mode.toUpperCase()}</span></span>
-        <button class="close" data-id="${p.id}" data-sym="${p.symbol}" data-exp="${p.expiry}"
-          data-strike="${p.strike}" data-t="${p.opt_type}" data-e="${p.entry}">Close</button></div>
-      <div class="r2"><span>${p.side} · ${p.lots} lot · qty ${p.qty}</span>
-        <span>@ ₹${p.entry}</span></div>
-    </div>`).join("");
-    list.querySelectorAll(".close").forEach(b=>b.onclick=async()=>{
-      b.disabled=true; b.textContent="…";
-      // fetch live LTP for this option; fall back to entry price
-      let px=parseFloat(b.dataset.e);
-      try{
-        const c=await (await fetch(`/api/chain?symbol=${b.dataset.sym}&expiry=${encodeURIComponent(b.dataset.exp)}`)).json();
-        const row=c.rows.find(r=>Math.abs(r.strike-parseFloat(b.dataset.strike))<0.01);
-        if(row){ px = b.dataset.t==="CE"?row.ce.ltp:row.pe.ltp; }
-      }catch(e){}
-      await fetch("/api/close",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({id:b.dataset.id,ltp:px})});
-      loadPositions();
-    });
+    document.getElementById("projEmpty").style.display="none";
+    document.getElementById("proj").style.display="block";
+    document.getElementById("pjInst").textContent=`${selSym} ${leg.strike} ${leg.opt_type}`;
+    document.getElementById("pjSub").textContent=`Exp ${selExpiry} · lot ${chain.lot_size}`;
+    document.getElementById("pjEntry").textContent="₹"+leg.ltp;
+    const rowsEl=document.getElementById("pjRows");
+    if(!plan||!plan.ok){ rowsEl.innerHTML=`<div class="proj-note">Select a stock to project against its signal.</div>`; return; }
+    const lot=chain.lot_size;
+    const mk=(label,prem,cls,perLot)=>{
+      const pnl=(prem-leg.ltp)*lot;
+      return `<div class="pj-row ${cls}"><span class="pj-lab">${label}</span>
+        <span class="pj-val">₹${prem.toFixed(2)}</span>
+        <span class="pj-pnl ${pnl>=0?"up":"down"}">${pnl>=0?"+":"−"}${money(Math.abs(pnl)).slice(1)}</span></div>`;
+    };
+    const slPrem=Math.max(0, leg.ltp - plan.opt_stop_move);
+    let html=mk("Stop loss", slPrem, "sl");
+    plan.targets.forEach(t=>{ html+=mk(`Target ${t.rr} (${t.rr}R)`, leg.ltp + t.opt_gain, "tp"); });
+    rowsEl.innerHTML=html;
   }
 
-  loadScreen(); loadPositions();
+  loadScreen();
   setInterval(loadScreen, 120000);
   </script>
 </body>

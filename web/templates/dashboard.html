@@ -3,152 +3,307 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Atlas — Screener</title>
+  <title>Atlas — Trading Terminal</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header>
-    <div class="brand">📈 Atlas<span class="dot">.</span></div>
-    <div class="user-box">
-      <span class="name">👤 {{ user.name }}</span>
-      <a class="logout" href="/logout">Logout</a>
+    <div class="brand"><span class="logo">A</span> Atlas</div>
+    <div class="right">
+      <span class="who"><span class="avatar">{{ user.name[0]|upper }}</span>{{ user.name }}</span>
+      <a href="/logout">Log out</a>
     </div>
   </header>
 
-  <main>
-    <h1>NSE Intraday Screener</h1>
-    <div class="page-sub">Live scan of ~180 liquid F&amp;O stocks. Signals support
-      your judgment — they don't predict the market.</div>
-
-    <div class="toolbar">
-      <div class="presets" id="presets"></div>
-      <div class="spacer"></div>
-      <div class="control">TF
-        <select id="interval">
-          <option value="5">5 min</option>
-          <option value="15">15 min</option>
-        </select>
+  <div class="grid">
+    <!-- ============ SCREENER ============ -->
+    <div class="col" id="screener">
+      <div class="search"><input id="q" placeholder="Search symbol…" autocomplete="off"></div>
+      <div class="chips">
+        <span class="chip active" data-f="all">All</span>
+        <span class="chip" data-f="call">Calls</span>
+        <span class="chip" data-f="put">Puts</span>
+        <span class="chip" data-f="vol">Vol×</span>
       </div>
-      <div class="control">Side
-        <select id="side">
-          <option value="ALL">All</option>
-          <option value="CALL">CALL</option>
-          <option value="PUT">PUT</option>
-        </select>
-      </div>
-      <button class="refresh" id="refresh">🔄 Refresh</button>
+      <ul class="slist" id="slist"><li class="pos-empty">Scanning…</li></ul>
     </div>
 
-    <div class="metrics" id="metrics"></div>
-
-    <div class="table-wrap">
-      <table>
-        <thead><tr id="head"></tr></thead>
-        <tbody id="body"><tr><td class="loading" colspan="14">Loading…</td></tr></tbody>
+    <!-- ============ OPTION CHAIN ============ -->
+    <div class="col" id="chainCol">
+      <div class="chain-head" id="chainHead" style="display:none">
+        <div class="top">
+          <span class="sym" id="cSym"></span>
+          <span class="spot" id="cSpot"></span>
+          <span class="src" id="cSrc"></span>
+        </div>
+        <div class="row2">
+          <select id="expiry"></select>
+          <span class="meta" id="cMeta"></span>
+        </div>
+      </div>
+      <div id="planWrap"></div>
+      <table class="chain-table" id="chainTable" style="display:none">
+        <thead><tr>
+          <th>Call OI</th><th>Call LTP</th><th>Strike</th><th>Put LTP</th><th>Put OI</th>
+        </tr></thead>
+        <tbody id="chainBody"></tbody>
       </table>
+      <div class="empty" id="chainEmpty">← Pick a stock to load its option chain</div>
     </div>
-    <div class="foot-note" id="foot"></div>
-  </main>
+
+    <!-- ============ TICKET + POSITIONS ============ -->
+    <div class="col">
+      <div class="ticket hidden" id="ticket">
+        <div class="t-inst" id="tInst">—</div>
+        <div class="t-sub" id="tSub"></div>
+        <div class="toggle">
+          <button data-mode="paper" class="on" id="mPaper">Paper</button>
+          <button data-mode="live" id="mLive">Live</button>
+        </div>
+        <div class="bs">
+          <button class="buy on" id="bBuy">BUY</button>
+          <button class="sell" id="bSell">SELL</button>
+        </div>
+        <div class="field">
+          <label>Lots</label>
+          <div class="stepper">
+            <button id="lMinus">−</button>
+            <input id="lots" value="1" inputmode="numeric">
+            <button id="lPlus">+</button>
+          </div>
+        </div>
+        <div class="summary">
+          <div><span>Lot size</span><span class="val" id="sLot">—</span></div>
+          <div><span>Quantity</span><span class="val" id="sQty">—</span></div>
+          <div><span>Price (LTP)</span><span class="val" id="sPx">—</span></div>
+          <div><span>Order value</span><span class="val" id="sVal">—</span></div>
+        </div>
+        <div class="live-warn" id="liveWarn" style="display:none">⚠ Live mode places a REAL Dhan order with real money.</div>
+        <button class="place" id="place">BUY · PAPER</button>
+        <div id="orderMsg"></div>
+      </div>
+
+      <div class="pos-wrap">
+        <h2>Positions</h2>
+        <div class="pnl-strip">
+          <div class="pnl-box"><div class="l">Open</div><div class="v" id="pOpen">0</div></div>
+          <div class="pnl-box"><div class="l">Realised P&L</div><div class="v" id="pReal">₹0</div></div>
+        </div>
+        <div id="posList"><div class="pos-empty">No open positions.</div></div>
+      </div>
+    </div>
+  </div>
 
   <script>
-  const COLS = [
-    ["symbol","Symbol"],["ltp","LTP"],["chg_%","Chg %"],["high","High"],["low","Low"],
-    ["volume","Volume"],["vol_x_avg","Vol×"],["rsi","RSI"],["atr_%","ATR%"],
-    ["vs_vwap_%","vs VWAP"],["trend","Trend"],["orb","ORB"],["conviction","Conviction"],
-    ["side","Side"]
-  ];
-  const PRESETS = {
-    "All": r => true,
-    "🟢 Bullish": r => r.conviction > 0.4 && r.trend==="up" && r["vs_vwap_%"]>0,
-    "🔴 Bearish": r => r.conviction < -0.4 && r.trend==="down" && r["vs_vwap_%"]<0,
-    "📈 Gainers": r => r["chg_%"] > 1,
-    "📉 Losers": r => r["chg_%"] < -1,
-    "⚡ Vol Surge": r => r.vol_x_avg >= 2,
-    "🚀 Breakout": r => r.orb==="↑" && r.trend==="up",
-    "🔻 Breakdown": r => r.orb==="↓" && r.trend==="down",
-    "🥶 Oversold": r => r.rsi < 30,
-    "🥵 Overbought": r => r.rsi > 70,
-  };
-  let rawRows = [], activePreset = "All", sortKey = "conviction", sortDir = -1, updated = null;
+  // ---------------- state ----------------
+  let rows=[], filter="all", query="", selSym=null, selExpiry=null, chain=null;
+  let leg=null; // {strike, opt_type, ltp, lot}
+  let mode="paper", side="BUY", lots=1;
+  const money = v => "₹"+Number(v).toLocaleString("en-IN",{maximumFractionDigits:2});
 
-  function buildPresets(){
-    const el = document.getElementById("presets");
-    el.innerHTML = "";
-    Object.keys(PRESETS).forEach(name => {
-      const c = document.createElement("div");
-      c.className = "chip" + (name===activePreset ? " active":"");
-      c.textContent = name;
-      c.onclick = () => { activePreset = name; buildPresets(); render(); };
-      el.appendChild(c);
-    });
+  // ---------------- screener ----------------
+  const FILTERS={all:()=>true,call:r=>r.side==="CALL",put:r=>r.side==="PUT",vol:r=>r.vol_x_avg>=2};
+  function renderList(){
+    let d=rows.filter(FILTERS[filter]);
+    if(query) d=d.filter(r=>r.symbol.includes(query.toUpperCase()));
+    d.sort((a,b)=>Math.abs(b.conviction)-Math.abs(a.conviction));
+    const el=document.getElementById("slist");
+    if(!d.length){ el.innerHTML=`<li class="pos-empty">No matches.</li>`; return; }
+    el.innerHTML=d.map(r=>{
+      const up=r["chg_%"]>=0;
+      return `<li class="srow ${r.symbol===selSym?"active":""}" data-s="${r.symbol}">
+        <div><div class="s-name">${r.symbol}<span class="side-tag ${r.side.toLowerCase()}">${r.side}</span></div>
+        <div class="s-sub">₹${r.ltp.toLocaleString("en-IN")} · V ${r.vol_x_avg}×</div></div>
+        <div class="s-right"><div class="chg ${up?"up":"down"}"><span class="tri">${up?"▲":"▼"}</span> ${up?"+":""}${r["chg_%"]}%</div>
+        <div class="s-sub">RSI ${r.rsi}</div></div>
+      </li>`;
+    }).join("");
+    el.querySelectorAll(".srow").forEach(li=>li.onclick=()=>selectSymbol(li.dataset.s));
   }
-  function fmt(v){ return typeof v==="number" ? v.toLocaleString("en-IN") : v; }
+  async function loadScreen(){
+    try{
+      const res=await fetch("/api/screen?interval=5");
+      if(res.status!==200){location.href="/login";return;}
+      rows=(await res.json()).rows||[]; renderList();
+    }catch(e){ document.getElementById("slist").innerHTML=`<li class="pos-empty">Screener unreachable.</li>`; }
+  }
+  document.querySelectorAll(".chip").forEach(c=>c.onclick=()=>{
+    document.querySelectorAll(".chip").forEach(x=>x.classList.remove("active"));
+    c.classList.add("active"); filter=c.dataset.f; renderList();
+  });
+  document.getElementById("q").oninput=e=>{query=e.target.value.trim();renderList();};
 
-  function render(){
-    const side = document.getElementById("side").value;
-    let rows = rawRows.filter(PRESETS[activePreset]);
-    if(side!=="ALL") rows = rows.filter(r => r.side===side);
-    rows.sort((a,b)=>{
-      let x=a[sortKey], y=b[sortKey];
-      if(sortKey==="conviction"){ x=Math.abs(x); y=Math.abs(y); }
-      return (x>y?1:x<y?-1:0)*sortDir;
-    });
-    // head
-    document.getElementById("head").innerHTML = COLS.map(([k,l])=>
-      `<th data-k="${k}">${l}${sortKey===k?(sortDir<0?" ▼":" ▲"):""}</th>`).join("");
-    document.querySelectorAll("#head th").forEach(th=>th.onclick=()=>{
-      const k=th.dataset.k; if(sortKey===k) sortDir*=-1; else {sortKey=k; sortDir=-1;} render();
-    });
-    // body
-    const body = document.getElementById("body");
-    if(!rows.length){ body.innerHTML = `<tr><td class="loading" colspan="14">No matches.</td></tr>`; }
-    else body.innerHTML = rows.map(r=>{
-      const chg = r["chg_%"], chgCls = chg>=0?"pos":"neg";
-      const vw = r["vs_vwap_%"], vwCls = vw>=0?"pos":"neg";
-      const convW = Math.round(Math.abs(r.conviction)*46);
-      const convCol = r.conviction>=0 ? "var(--green)":"var(--red)";
-      return `<tr>
-        <td class="sym">${r.symbol}</td>
-        <td>${fmt(r.ltp)}</td>
-        <td class="${chgCls}">${chg>=0?"+":""}${chg}%</td>
-        <td>${fmt(r.high)}</td><td>${fmt(r.low)}</td>
-        <td>${fmt(r.volume)}</td>
-        <td>${r.vol_x_avg}×</td>
-        <td>${r.rsi}</td>
-        <td>${r["atr_%"]}</td>
-        <td class="${vwCls}">${vw>=0?"+":""}${vw}%</td>
-        <td>${r.trend==="up"?"🟢 up":"🔴 down"}</td>
-        <td>${r.orb}</td>
-        <td><span class="conv-bar" style="width:${convW}px;background:${convCol}"></span>
-            ${r.conviction}</td>
-        <td><span class="badge ${r.side.toLowerCase()}">${r.side}</span></td>
+  // ---------------- option chain ----------------
+  async function selectSymbol(sym){
+    selSym=sym; selExpiry=null; renderList();
+    document.getElementById("chainEmpty").textContent="Loading chain for "+sym+"…";
+    document.getElementById("chainEmpty").style.display="block";
+    document.getElementById("chainHead").style.display="none";
+    document.getElementById("chainTable").style.display="none";
+    document.getElementById("planWrap").innerHTML="";
+    loadPlan(sym);
+    const ex=await (await fetch("/api/expiries?symbol="+sym)).json();
+    const sel=document.getElementById("expiry");
+    sel.innerHTML=ex.expiries.map(e=>`<option>${e}</option>`).join("");
+    selExpiry=ex.expiries[0];
+    sel.onchange=()=>{selExpiry=sel.value; loadChain();};
+    loadChain();
+  }
+  async function loadChain(){
+    chain=await (await fetch(`/api/chain?symbol=${selSym}&expiry=${encodeURIComponent(selExpiry||"")}`)).json();
+    renderChain();
+  }
+  function renderChain(){
+    if(!chain||!chain.rows.length){document.getElementById("chainEmpty").textContent="No chain data.";return;}
+    document.getElementById("chainEmpty").style.display="none";
+    document.getElementById("chainHead").style.display="block";
+    document.getElementById("chainTable").style.display="table";
+    document.getElementById("cSym").textContent=selSym;
+    document.getElementById("cSpot").textContent="₹"+chain.spot.toLocaleString("en-IN");
+    document.getElementById("cSrc").textContent=chain.source==="NSE"?"NSE live":chain.source==="theoretical"?"theoretical":"n/a";
+    document.getElementById("cMeta").textContent=`Lot ${chain.lot_size} · ${chain.rows.length} strikes`;
+    // find ATM
+    let atmIdx=0, best=1e9;
+    chain.rows.forEach((r,i)=>{const d=Math.abs(r.strike-chain.spot); if(d<best){best=d;atmIdx=i;}});
+    const body=document.getElementById("chainBody");
+    body.innerHTML=chain.rows.map((r,i)=>{
+      const itm = r.strike<chain.spot ? "itm" : r.strike>chain.spot ? "itm-pe":"";
+      const atm = i===atmIdx?"atm":"";
+      return `<tr class="${atm} ${itm}">
+        <td class="oi-c">${r.ce.oi?r.ce.oi.toLocaleString("en-IN"):"—"}</td>
+        <td class="ce-side"><div class="cell ce" data-i="${i}" data-t="CE">
+          <div class="ltp">${r.ce.ltp}</div><div class="oi">IV ${r.ce.iv||"—"}</div></div></td>
+        <td class="strike">${r.strike}</td>
+        <td class="pe-side"><div class="cell pe" data-i="${i}" data-t="PE">
+          <div class="ltp">${r.pe.ltp}</div><div class="oi">IV ${r.pe.iv||"—"}</div></div></td>
+        <td class="oi-c">${r.pe.oi?r.pe.oi.toLocaleString("en-IN"):"—"}</td>
       </tr>`;
     }).join("");
-    // metrics
-    const calls = rows.filter(r=>r.side==="CALL").length;
-    const avg = rows.length ? (rows.reduce((s,r)=>s+r["chg_%"],0)/rows.length).toFixed(2):"—";
-    document.getElementById("metrics").innerHTML = [
-      ["Matches", rows.length],["🟢 CALL", calls],["🔴 PUT", rows.length-calls],
-      ["Avg Chg %", avg],["Scanned", rawRows.length]
-    ].map(([l,v])=>`<div class="metric"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("");
-    document.getElementById("foot").textContent =
-      `Updated ${updated||"—"} · cached ~2 min · Data: yfinance (delayed). Not investment advice.`;
+    body.querySelectorAll(".cell").forEach(c=>c.onclick=()=>{
+      const r=chain.rows[+c.dataset.i], t=c.dataset.t;
+      selectLeg({strike:r.strike, opt_type:t, ltp:(t==="CE"?r.ce.ltp:r.pe.ltp), lot:chain.lot_size});
+    });
+    if(atmIdx) body.querySelectorAll("tr")[atmIdx].scrollIntoView({block:"center"});
   }
 
-  async function load(force){
-    const tf = document.getElementById("interval").value;
-    document.getElementById("body").innerHTML =
-      `<tr><td class="loading" colspan="14">Scanning NSE F&O universe…</td></tr>`;
-    const res = await fetch(`/api/screen?interval=${tf}&force=${force?1:0}`);
-    if(res.status!==200){ location.href="/login"; return; }
-    const data = await res.json();
-    rawRows = data.rows; updated = data.updated; render();
+  // ---------------- trade plan ----------------
+  async function loadPlan(sym){
+    const wrap=document.getElementById("planWrap");
+    wrap.innerHTML=`<div class="plan"><div class="plan-note">Building trade plan for ${sym}…</div></div>`;
+    let p;
+    try{ p=await (await fetch("/api/levels?symbol="+sym)).json(); }catch(e){ wrap.innerHTML=""; return; }
+    if(sym!==selSym) return;
+    if(!p.ok){ wrap.innerHTML=`<div class="plan"><div class="plan-note">Trade plan unavailable: ${p.error||""}</div></div>`; return; }
+    const long=p.bias==="LONG", dirCls=long?"long":"short", col=long?"up":"down";
+    const cf=Math.round(p.confidence*100);
+    const lvls=Object.entries(p.levels).map(([k,v])=>`<span class="lvl">${k}<b>${v}</b></span>`).join("");
+    const tps=p.targets.map(t=>`<div class="tp"><div class="lab">TP${t.rr} · ${t.rr}R</div>
+       <div class="px">${t.px}</div><div class="opt">opt +₹${t.opt_gain}</div></div>`).join("");
+    const why=(p.factors||[]).map(f=>{
+      const cls=f.dir>0?"up":f.dir<0?"down":"flat", ic=f.dir>0?"▲":f.dir<0?"▼":"•";
+      return `<div class="why-row"><span class="why-ico ${cls}">${ic}</span>
+        <span class="why-txt"><span class="f">${f.factor}</span> <span class="d">— ${f.text}</span></span></div>`;
+    }).join("");
+    wrap.innerHTML=`<div class="plan ${dirCls}">
+      <div class="plan-top">
+        <div class="plan-bias"><span class="bias-badge ${dirCls}">${p.bias}</span>
+          <span class="opt">Buy ${p.option} · ATR ${p.atr} (${p.atr_pct}%)</span></div>
+        <div class="plan-conf">Conviction ${cf}%
+          <div class="conf-track"><div class="conf-fill" style="width:${cf}%;background:var(--${col})"></div></div></div>
+      </div>
+      <div class="plan-grid">
+        <div class="plan-cell"><div class="l">Entry</div><div class="v">${p.entry}</div>
+          <div class="sub">at market / on trigger</div></div>
+        <div class="plan-cell"><div class="l">Stop loss</div><div class="v down">${p.stop}</div>
+          <div class="sub">${p.risk_pts} pts (${p.risk_pct}%) · opt −₹${p.opt_stop_move}</div></div>
+      </div>
+      <div class="tps">${tps}</div>
+      <div class="why"><div class="why-h">Why this trade — ${p.bias} basis</div>${why}</div>
+      <div class="plan-lvls">${lvls}</div>
+      <div class="plan-note">${p.note}</div>
+    </div>`;
   }
 
-  document.getElementById("refresh").onclick = ()=>load(true);
-  document.getElementById("interval").onchange = ()=>load(false);
-  document.getElementById("side").onchange = render;
-  buildPresets(); load(false);
+  // ---------------- order ticket ----------------
+  function selectLeg(l){
+    leg=l; document.getElementById("ticket").classList.remove("hidden");
+    document.getElementById("tInst").textContent=`${selSym} ${l.strike} ${l.opt_type}`;
+    document.getElementById("tSub").textContent=`Exp ${selExpiry} · LTP ₹${l.ltp}`;
+    document.getElementById("orderMsg").innerHTML="";
+    updateTicket();
+  }
+  function updateTicket(){
+    if(!leg) return;
+    const qty=lots*leg.lot, val=qty*leg.ltp;
+    document.getElementById("sLot").textContent=leg.lot;
+    document.getElementById("sQty").textContent=qty;
+    document.getElementById("sPx").textContent="₹"+leg.ltp;
+    document.getElementById("sVal").textContent=money(val);
+    document.getElementById("lots").value=lots;
+    document.getElementById("place").textContent=`${side} · ${mode.toUpperCase()}`;
+    document.getElementById("liveWarn").style.display=mode==="live"?"block":"none";
+  }
+  document.getElementById("mPaper").onclick=()=>setMode("paper");
+  document.getElementById("mLive").onclick=()=>setMode("live");
+  function setMode(m){mode=m;
+    document.getElementById("mPaper").classList.toggle("on",m==="paper");
+    document.getElementById("mLive").classList.toggle("on",m==="live"); updateTicket();}
+  document.getElementById("bBuy").onclick=()=>setSide("BUY");
+  document.getElementById("bSell").onclick=()=>setSide("SELL");
+  function setSide(s){side=s;
+    document.getElementById("bBuy").classList.toggle("on",s==="BUY");
+    document.getElementById("bSell").classList.toggle("on",s==="SELL"); updateTicket();}
+  document.getElementById("lMinus").onclick=()=>{lots=Math.max(1,lots-1);updateTicket();};
+  document.getElementById("lPlus").onclick=()=>{lots++;updateTicket();};
+  document.getElementById("lots").oninput=e=>{lots=Math.max(1,parseInt(e.target.value)||1);updateTicket();};
+
+  document.getElementById("place").onclick=async()=>{
+    if(!leg) return;
+    const btn=document.getElementById("place"); btn.disabled=true;
+    const res=await fetch("/api/order",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({mode,symbol:selSym,expiry:selExpiry,strike:leg.strike,
+        opt_type:leg.opt_type,side,lots,ltp:leg.ltp})});
+    const j=await res.json(); btn.disabled=false;
+    const box=document.getElementById("orderMsg");
+    if(j.ok){ box.innerHTML=`<div class="msg ok">✓ ${side} ${lots} lot(s) placed (${mode}).</div>`; loadPositions(); }
+    else box.innerHTML=`<div class="msg err">✕ ${j.error||"Order failed."}</div>`;
+  };
+
+  // ---------------- positions ----------------
+  async function loadPositions(){
+    const j=await (await fetch("/api/positions")).json();
+    const list=document.getElementById("posList");
+    document.getElementById("pOpen").textContent=j.positions.length;
+    const real=(j.stats&&(j.stats.total_pnl??j.stats.net_pnl))||0;
+    const rEl=document.getElementById("pReal");
+    rEl.textContent=money(real);
+    rEl.className="v "+(real>0?"up":real<0?"down":"");
+    if(!j.positions.length){ list.innerHTML=`<div class="pos-empty">No open positions.</div>`; return; }
+    list.innerHTML=j.positions.map(p=>`<div class="pos">
+      <div class="r1"><span class="p-inst">${p.symbol} ${Math.round(p.strike)} ${p.opt_type}
+        <span class="p-tag ${p.mode}">${p.mode.toUpperCase()}</span></span>
+        <button class="close" data-id="${p.id}" data-sym="${p.symbol}" data-exp="${p.expiry}"
+          data-strike="${p.strike}" data-t="${p.opt_type}" data-e="${p.entry}">Close</button></div>
+      <div class="r2"><span>${p.side} · ${p.lots} lot · qty ${p.qty}</span>
+        <span>@ ₹${p.entry}</span></div>
+    </div>`).join("");
+    list.querySelectorAll(".close").forEach(b=>b.onclick=async()=>{
+      b.disabled=true; b.textContent="…";
+      // fetch live LTP for this option; fall back to entry price
+      let px=parseFloat(b.dataset.e);
+      try{
+        const c=await (await fetch(`/api/chain?symbol=${b.dataset.sym}&expiry=${encodeURIComponent(b.dataset.exp)}`)).json();
+        const row=c.rows.find(r=>Math.abs(r.strike-parseFloat(b.dataset.strike))<0.01);
+        if(row){ px = b.dataset.t==="CE"?row.ce.ltp:row.pe.ltp; }
+      }catch(e){}
+      await fetch("/api/close",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({id:b.dataset.id,ltp:px})});
+      loadPositions();
+    });
+  }
+
+  loadScreen(); loadPositions();
+  setInterval(loadScreen, 120000);
   </script>
 </body>
 </html>

@@ -44,6 +44,62 @@ def _dir_score(row: pd.Series) -> float:
     return float(raw * vol_conf)
 
 
+def explain_score(row: pd.Series) -> list[dict]:
+    """Human-readable breakdown of WHY the signal is what it is.
+
+    Returns one entry per factor: its direction (+1 bull / -1 bear / 0 neutral),
+    a strength in [0,1], and a plain-English reason. Mirrors _dir_score exactly.
+    """
+    out = []
+
+    # 1. Trend
+    up = row["ema9"] > row["ema21"]
+    out.append({
+        "factor": "Trend (EMA 9/21)", "dir": 1 if up else -1, "strength": 1.0,
+        "text": f"EMA9 {'above' if up else 'below'} EMA21 → {'up' if up else 'down'}trend",
+    })
+
+    # 2. VWAP
+    above = row["close"] > row["vwap"]
+    out.append({
+        "factor": "VWAP", "dir": 1 if above else -1, "strength": 1.0,
+        "text": f"Price {'above' if above else 'below'} VWAP ({row['vwap']:.2f}) — "
+                f"{'buyers' if above else 'sellers'} in control",
+    })
+
+    # 3. RSI momentum
+    rsi = float(row["rsi"])
+    rsi_v = float(np.clip((rsi - 50) / 20, -1, 1))
+    out.append({
+        "factor": "Momentum (RSI)", "dir": 1 if rsi_v > 0 else -1 if rsi_v < 0 else 0,
+        "strength": abs(rsi_v),
+        "text": f"RSI {rsi:.0f} → {'bullish' if rsi_v>0.1 else 'bearish' if rsi_v<-0.1 else 'neutral'} momentum",
+    })
+
+    # 4. Opening-range breakout
+    orh, orl = row.get("or_high", np.nan), row.get("or_low", np.nan)
+    if not np.isnan(orh):
+        if row["close"] > orh:
+            out.append({"factor": "Opening-range", "dir": 1, "strength": 1.0,
+                        "text": f"Broke above OR high ({orh:.2f}) — bullish breakout"})
+        elif row["close"] < orl:
+            out.append({"factor": "Opening-range", "dir": -1, "strength": 1.0,
+                        "text": f"Broke below OR low ({orl:.2f}) — bearish breakdown"})
+        else:
+            out.append({"factor": "Opening-range", "dir": 0, "strength": 0.0,
+                        "text": f"Inside opening range ({orl:.2f}–{orh:.2f}) — no breakout yet"})
+
+    # 5. Volume confirmation (gate)
+    vx = float(row["volume"] / row["avg_volume"]) if row["avg_volume"] else 0.0
+    conf = float(np.clip(vx, 0, 2) / 2)
+    out.append({
+        "factor": "Volume confirmation", "dir": 0, "strength": conf,
+        "text": f"Volume {vx:.1f}× average — {'strong' if conf>0.6 else 'weak' if conf<0.35 else 'moderate'} "
+                f"conviction gate",
+    })
+    return out
+
+
 def add_opening_range(df: pd.DataFrame, opening_bars: int = 6) -> pd.DataFrame:
     """Add per-session opening-range high/low (first `opening_bars` bars)."""
     out = df.copy()

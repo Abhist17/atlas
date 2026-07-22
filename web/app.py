@@ -13,7 +13,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from web import auth
-from web.data_service import get_screen, refresh
+from web.data_service import chain, expiries, get_screen, refresh
+from engine import broker
 
 BASE = Path(__file__).parent
 app = FastAPI(title="Atlas")
@@ -112,6 +113,50 @@ async def api_screen(request: Request, interval: int = 5, force: bool = False,
         "count": len(df),
         "updated": _dt.datetime.now().strftime("%H:%M:%S"),
     })
+
+
+@app.get("/api/expiries")
+async def api_expiries(symbol: str, email: str = Depends(require_user)):
+    return JSONResponse({"symbol": symbol.upper(), "expiries": expiries(symbol)})
+
+
+@app.get("/api/chain")
+async def api_chain(symbol: str, expiry: str | None = None,
+                    email: str = Depends(require_user)):
+    return JSONResponse(chain(symbol, expiry))
+
+
+@app.get("/api/levels")
+async def api_levels(symbol: str, email: str = Depends(require_user)):
+    from engine.levels import compute_levels
+    return JSONResponse(compute_levels(symbol))
+
+
+@app.get("/api/positions")
+async def api_positions(email: str = Depends(require_user)):
+    from storage.journal import stats
+    try:
+        s = stats()
+    except Exception:
+        s = {}
+    return JSONResponse({"positions": broker.open_positions(), "stats": s})
+
+
+@app.post("/api/order")
+async def api_order(request: Request, email: str = Depends(require_user)):
+    b = await request.json()
+    res = broker.place_order(
+        mode=b.get("mode", "paper"), symbol=b["symbol"], expiry=b["expiry"],
+        strike=float(b["strike"]), opt_type=b["opt_type"], side=b["side"],
+        lots=int(b.get("lots", 1)), ltp=float(b["ltp"]))
+    return JSONResponse(res, status_code=200 if res.get("ok") else 400)
+
+
+@app.post("/api/close")
+async def api_close(request: Request, email: str = Depends(require_user)):
+    b = await request.json()
+    res = broker.close_position(b["id"], float(b["ltp"]))
+    return JSONResponse(res, status_code=200 if res.get("ok") else 400)
 
 
 if __name__ == "__main__":

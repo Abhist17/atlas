@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Atlas — Screener</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">📈 Atlas<span class="dot">.</span></div>
+    <div class="user-box">
+      <span class="name">👤 {{ user.name }}</span>
+      <a class="logout" href="/logout">Logout</a>
+    </div>
+  </header>
+
+  <main>
+    <h1>NSE Intraday Screener</h1>
+    <div class="page-sub">Live scan of ~180 liquid F&amp;O stocks. Signals support
+      your judgment — they don't predict the market.</div>
+
+    <div class="toolbar">
+      <div class="presets" id="presets"></div>
+      <div class="spacer"></div>
+      <div class="control">TF
+        <select id="interval">
+          <option value="5">5 min</option>
+          <option value="15">15 min</option>
+        </select>
+      </div>
+      <div class="control">Side
+        <select id="side">
+          <option value="ALL">All</option>
+          <option value="CALL">CALL</option>
+          <option value="PUT">PUT</option>
+        </select>
+      </div>
+      <button class="refresh" id="refresh">🔄 Refresh</button>
+    </div>
+
+    <div class="metrics" id="metrics"></div>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr id="head"></tr></thead>
+        <tbody id="body"><tr><td class="loading" colspan="14">Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="foot-note" id="foot"></div>
+  </main>
+
+  <script>
+  const COLS = [
+    ["symbol","Symbol"],["ltp","LTP"],["chg_%","Chg %"],["high","High"],["low","Low"],
+    ["volume","Volume"],["vol_x_avg","Vol×"],["rsi","RSI"],["atr_%","ATR%"],
+    ["vs_vwap_%","vs VWAP"],["trend","Trend"],["orb","ORB"],["conviction","Conviction"],
+    ["side","Side"]
+  ];
+  const PRESETS = {
+    "All": r => true,
+    "🟢 Bullish": r => r.conviction > 0.4 && r.trend==="up" && r["vs_vwap_%"]>0,
+    "🔴 Bearish": r => r.conviction < -0.4 && r.trend==="down" && r["vs_vwap_%"]<0,
+    "📈 Gainers": r => r["chg_%"] > 1,
+    "📉 Losers": r => r["chg_%"] < -1,
+    "⚡ Vol Surge": r => r.vol_x_avg >= 2,
+    "🚀 Breakout": r => r.orb==="↑" && r.trend==="up",
+    "🔻 Breakdown": r => r.orb==="↓" && r.trend==="down",
+    "🥶 Oversold": r => r.rsi < 30,
+    "🥵 Overbought": r => r.rsi > 70,
+  };
+  let rawRows = [], activePreset = "All", sortKey = "conviction", sortDir = -1, updated = null;
+
+  function buildPresets(){
+    const el = document.getElementById("presets");
+    el.innerHTML = "";
+    Object.keys(PRESETS).forEach(name => {
+      const c = document.createElement("div");
+      c.className = "chip" + (name===activePreset ? " active":"");
+      c.textContent = name;
+      c.onclick = () => { activePreset = name; buildPresets(); render(); };
+      el.appendChild(c);
+    });
+  }
+  function fmt(v){ return typeof v==="number" ? v.toLocaleString("en-IN") : v; }
+
+  function render(){
+    const side = document.getElementById("side").value;
+    let rows = rawRows.filter(PRESETS[activePreset]);
+    if(side!=="ALL") rows = rows.filter(r => r.side===side);
+    rows.sort((a,b)=>{
+      let x=a[sortKey], y=b[sortKey];
+      if(sortKey==="conviction"){ x=Math.abs(x); y=Math.abs(y); }
+      return (x>y?1:x<y?-1:0)*sortDir;
+    });
+    // head
+    document.getElementById("head").innerHTML = COLS.map(([k,l])=>
+      `<th data-k="${k}">${l}${sortKey===k?(sortDir<0?" ▼":" ▲"):""}</th>`).join("");
+    document.querySelectorAll("#head th").forEach(th=>th.onclick=()=>{
+      const k=th.dataset.k; if(sortKey===k) sortDir*=-1; else {sortKey=k; sortDir=-1;} render();
+    });
+    // body
+    const body = document.getElementById("body");
+    if(!rows.length){ body.innerHTML = `<tr><td class="loading" colspan="14">No matches.</td></tr>`; }
+    else body.innerHTML = rows.map(r=>{
+      const chg = r["chg_%"], chgCls = chg>=0?"pos":"neg";
+      const vw = r["vs_vwap_%"], vwCls = vw>=0?"pos":"neg";
+      const convW = Math.round(Math.abs(r.conviction)*46);
+      const convCol = r.conviction>=0 ? "var(--green)":"var(--red)";
+      return `<tr>
+        <td class="sym">${r.symbol}</td>
+        <td>${fmt(r.ltp)}</td>
+        <td class="${chgCls}">${chg>=0?"+":""}${chg}%</td>
+        <td>${fmt(r.high)}</td><td>${fmt(r.low)}</td>
+        <td>${fmt(r.volume)}</td>
+        <td>${r.vol_x_avg}×</td>
+        <td>${r.rsi}</td>
+        <td>${r["atr_%"]}</td>
+        <td class="${vwCls}">${vw>=0?"+":""}${vw}%</td>
+        <td>${r.trend==="up"?"🟢 up":"🔴 down"}</td>
+        <td>${r.orb}</td>
+        <td><span class="conv-bar" style="width:${convW}px;background:${convCol}"></span>
+            ${r.conviction}</td>
+        <td><span class="badge ${r.side.toLowerCase()}">${r.side}</span></td>
+      </tr>`;
+    }).join("");
+    // metrics
+    const calls = rows.filter(r=>r.side==="CALL").length;
+    const avg = rows.length ? (rows.reduce((s,r)=>s+r["chg_%"],0)/rows.length).toFixed(2):"—";
+    document.getElementById("metrics").innerHTML = [
+      ["Matches", rows.length],["🟢 CALL", calls],["🔴 PUT", rows.length-calls],
+      ["Avg Chg %", avg],["Scanned", rawRows.length]
+    ].map(([l,v])=>`<div class="metric"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("");
+    document.getElementById("foot").textContent =
+      `Updated ${updated||"—"} · cached ~2 min · Data: yfinance (delayed). Not investment advice.`;
+  }
+
+  async function load(force){
+    const tf = document.getElementById("interval").value;
+    document.getElementById("body").innerHTML =
+      `<tr><td class="loading" colspan="14">Scanning NSE F&O universe…</td></tr>`;
+    const res = await fetch(`/api/screen?interval=${tf}&force=${force?1:0}`);
+    if(res.status!==200){ location.href="/login"; return; }
+    const data = await res.json();
+    rawRows = data.rows; updated = data.updated; render();
+  }
+
+  document.getElementById("refresh").onclick = ()=>load(true);
+  document.getElementById("interval").onchange = ()=>load(false);
+  document.getElementById("side").onchange = render;
+  buildPresets(); load(false);
+  </script>
+</body>
+</html>

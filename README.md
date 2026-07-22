@@ -30,13 +30,26 @@ python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env          # optional: Dhan creds for future order execution
 
+# Web app (login + screener) — the main product
+uvicorn web.app:app --port 8000       # open http://localhost:8000
+
+# Alternatives
+streamlit run dashboard/app.py        # quick Streamlit dashboard
 python -m engine.scanner              # one-off scan of current setups
 python -m engine.runner --once        # single scan + journal
 python -m engine.runner               # scheduled loop through market hours
-streamlit run dashboard/app.py        # live dashboard
-
 python -m backtest.directional_bt     # validate the directional engine
 ```
+
+## Web app
+
+A proper multi-user web application (FastAPI):
+
+- **Login / signup** — PBKDF2-hashed passwords, signed session cookies
+- **Live screener dashboard** — ~180 NSE F&O stocks, one-click preset scans
+  (Bullish / Bearish / Gainers / Losers / Volume-surge / Breakout / RSI extremes),
+  sortable columns, side filter, timeframe toggle
+- **JSON API** — `/api/screen` (auth-protected, cached)
 
 ## Modules
 

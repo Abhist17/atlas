@@ -23,3 +23,7 @@ logs/*.log
 
 # Claude local settings
 .claude/
+
+# User data & secrets
+data_store/users.json
+data_store/.session_secret

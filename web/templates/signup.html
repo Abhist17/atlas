@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Atlas — Create account</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="auth-wrap">
+    <div class="auth-card">
+      <div class="brand">📈 Atlas<span class="dot">.</span></div>
+      <div class="sub">Create your account</div>
+      <form method="post" action="/signup">
+        <label for="name">Name</label>
+        <input type="text" id="name" name="name" placeholder="Your name">
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" required placeholder="you@example.com">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required
+               minlength="6" placeholder="At least 6 characters">
+        {% if error %}<div class="error">{{ error }}</div>{% endif %}
+        <button class="btn" type="submit">Create account</button>
+      </form>
+      <div class="switch">Already have an account? <a href="/login">Sign in</a></div>
+    </div>
+  </div>
+</body>
+</html>

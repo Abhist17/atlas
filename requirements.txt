@@ -14,7 +14,12 @@ websockets
 # Scheduling
 APScheduler
 
-# Dashboard
+# Web app + dashboard
+fastapi
+uvicorn
+jinja2
+itsdangerous
+python-multipart
 streamlit
 plotly
 

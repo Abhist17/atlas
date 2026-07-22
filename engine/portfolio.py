@@ -29,14 +29,22 @@ class Trade:
     entry_time: datetime
     exit_time: datetime
     reason: str  # 'target' | 'stop' | 'square_off'
+    cost: float = 0.0  # round-trip transaction cost (INR)
 
     @property
-    def pnl(self) -> float:
+    def gross_pnl(self) -> float:
         return round((self.exit_price - self.entry_price) * self.qty, 2)
 
     @property
+    def pnl(self) -> float:
+        """Net P&L after transaction costs."""
+        return round(self.gross_pnl - self.cost, 2)
+
+    @property
     def pnl_pct(self) -> float:
-        return round((self.exit_price / self.entry_price - 1) * 100, 3)
+        """Net return on capital deployed in the trade."""
+        deployed = self.entry_price * self.qty
+        return round(self.pnl / deployed * 100, 3) if deployed else 0.0
 
 
 @dataclass
@@ -73,9 +81,10 @@ class Portfolio:
         self.cash -= cost
         self.positions[pos.symbol] = pos
 
-    def close(self, symbol: str, price: float, when: datetime, reason: str) -> Trade:
+    def close(self, symbol: str, price: float, when: datetime, reason: str,
+              cost: float = 0.0) -> Trade:
         pos = self.positions.pop(symbol)
-        self.cash += pos.qty * price
+        self.cash += pos.qty * price - cost
         trade = Trade(
             symbol=symbol,
             qty=pos.qty,
@@ -84,6 +93,7 @@ class Portfolio:
             entry_time=pos.entry_time,
             exit_time=when,
             reason=reason,
+            cost=cost,
         )
         self.trades.append(trade)
         return trade

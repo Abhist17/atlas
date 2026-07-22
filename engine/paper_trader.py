@@ -12,6 +12,7 @@ from datetime import datetime, time
 import pandas as pd
 
 from config.settings import RiskConfig, config
+from engine.costs import DEFAULT_COSTS, CostModel
 from engine.portfolio import Portfolio, Position
 from utils.logger import get_logger
 
@@ -24,8 +25,10 @@ def _parse_hhmm(s: str) -> time:
 
 
 class PaperTrader:
-    def __init__(self, risk: RiskConfig | None = None) -> None:
+    def __init__(self, risk: RiskConfig | None = None,
+                 costs: CostModel | None = None) -> None:
         self.risk = risk or config.risk
+        self.costs = costs or DEFAULT_COSTS
         self.pf = Portfolio(self.risk.starting_capital)
         self._day_start_equity = self.risk.starting_capital
         self._halted = False  # daily kill-switch tripped
@@ -98,10 +101,11 @@ class PaperTrader:
             elif now.time() >= square_off:
                 reason = "square_off"
             if reason:
-                t = self.pf.close(symbol, price, now, reason)
+                cost = self.costs.round_trip(pos.entry_price, price, pos.qty)
+                t = self.pf.close(symbol, price, now, reason, cost=cost)
                 self._traded_today.add(symbol)
-                log.info("EXIT %s %s @ %.2f pnl=%.2f (%s)",
-                         symbol, t.qty, price, t.pnl, reason)
+                log.info("EXIT %s %s @ %.2f net_pnl=%.2f cost=%.2f (%s)",
+                         symbol, t.qty, price, t.pnl, cost, reason)
 
     def _consider_entries(
         self, candidates: pd.DataFrame, prices: dict[str, float], now: datetime

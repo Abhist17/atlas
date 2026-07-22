@@ -74,6 +74,37 @@ class YFClient:
             df.to_parquet(cache, index=False)
         return df
 
+    def batch_intraday(
+        self, tickers: list[str], days: int = 2, interval: int = 5,
+        chunk: int = 40,
+    ) -> dict[str, pd.DataFrame]:
+        """Bulk-download intraday bars for many tickers at once (much faster
+        than one-by-one). Returns {ticker: OHLCV frame}. Chunked to stay under
+        yfinance's per-request limits.
+        """
+        yf_interval = _INTERVAL_MAP.get(interval, "5m")
+        out: dict[str, pd.DataFrame] = {}
+        for i in range(0, len(tickers), chunk):
+            batch = tickers[i:i + chunk]
+            try:
+                raw = yf.download(
+                    batch, period=f"{days}d", interval=yf_interval,
+                    progress=False, auto_adjust=True, group_by="ticker",
+                    threads=True,
+                )
+            except Exception as e:
+                log.warning("batch fetch failed for %d tickers: %s", len(batch), e)
+                continue
+            for tk in batch:
+                try:
+                    sub = raw[tk] if isinstance(raw.columns, pd.MultiIndex) else raw
+                    df = _normalise(sub)
+                    if not df.empty:
+                        out[tk] = df
+                except (KeyError, Exception):
+                    continue
+        return out
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8))
     def daily(self, symbol: str, period: str = "6mo") -> pd.DataFrame:
         raw = yf.download(

@@ -45,6 +45,9 @@ header{
 .chip{border:1px solid var(--line-2); background:var(--bg); color:var(--sub);
   padding:4px 10px; border-radius:20px; font-size:11.5px; cursor:pointer}
 .chip.active{background:var(--ink); color:#fff; border-color:var(--ink)}
+.sortbar{display:flex; align-items:center; gap:8px; padding:0 14px 10px}
+.sortbar label{font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--faint)}
+.sortbar select{flex:1; border:1px solid var(--line-2); border-radius:7px; padding:5px 9px; font-size:12px; background:var(--bg); color:var(--ink)}
 .slist{list-style:none; margin:0; padding:0}
 .srow{display:flex; align-items:center; justify-content:space-between; gap:8px;
   padding:9px 16px; cursor:pointer; border-bottom:1px solid var(--line)}
@@ -74,6 +77,25 @@ header{
 .chain-head select{border:1px solid var(--line-2); border-radius:7px; padding:6px 10px; font-size:12.5px; background:var(--bg)}
 .chain-head .meta{font-size:11.5px; color:var(--faint)}
 
+/* ---------- live chart ---------- */
+.chart-wrap{border-bottom:1px solid var(--line); padding:10px 14px 6px}
+.chart-top{display:flex; align-items:center; gap:12px; margin-bottom:4px}
+.chart-price{font-size:18px; font-weight:700; font-variant-numeric:tabular-nums}
+.chart-live{font-size:10px; font-weight:700; letter-spacing:.05em; text-transform:uppercase;
+  padding:2px 8px; border-radius:4px}
+.chart-live.on{background:var(--up-bg); color:var(--up)}
+.chart-live.off{background:var(--raise); color:var(--faint); border:1px solid var(--line-2)}
+.chart-legend{margin-left:auto; font-size:11px; color:var(--sub); display:flex; align-items:center; gap:6px}
+.chart-legend i{width:14px; height:2px; display:inline-block; margin-right:2px; vertical-align:middle}
+.chart-legend i.e9{background:var(--up)} .chart-legend i.e15{background:var(--down)}
+.chart-tf{border:1px solid var(--line-2); border-radius:6px; padding:3px 7px; font-size:11.5px; background:var(--bg); color:var(--ink)}
+.chart-svg svg{display:block; width:100%; height:224px}
+.cndl-up{fill:none; stroke:var(--ink)} .cndl-dn{fill:var(--ink); stroke:var(--ink)}
+.wick{stroke:var(--faint)}
+.ax-y{fill:var(--faint); font-size:8.5px; font-variant-numeric:tabular-nums}
+.ax-x{fill:var(--faint); font-size:8px; font-variant-numeric:tabular-nums}
+.ax-live{fill:#fff; font-size:8.5px; font-weight:700; font-variant-numeric:tabular-nums}
+
 /* ---------- signal banner ---------- */
 .signal{padding:13px 15px; color:#fff}
 .signal.enter{background:var(--up)}
@@ -102,6 +124,22 @@ header{
 .pj-pnl{font-weight:700; font-variant-numeric:tabular-nums; min-width:74px; text-align:right}
 .pj-pnl.up{color:var(--up)} .pj-pnl.down{color:var(--down)}
 .proj-note{font-size:10.5px; color:var(--faint); padding:6px 16px 0; line-height:1.5}
+.paper-buy{display:block; width:calc(100% - 32px); margin:10px 16px 4px; border:none;
+  background:var(--up); color:#fff; padding:11px; border-radius:9px; font-size:13.5px; font-weight:700; cursor:pointer}
+.paper-buy:hover{opacity:.9} .paper-buy:disabled{opacity:.5; cursor:default}
+
+/* paper positions */
+.paper-wrap{border-top:1px solid var(--line); margin-top:8px}
+.paper-hd{display:flex; align-items:center; justify-content:space-between; padding:14px 16px 6px}
+.paper-pnl{font-size:12px; font-weight:700; color:var(--sub); font-variant-numeric:tabular-nums}
+.paper-pnl.up{color:var(--up)} .paper-pnl.down{color:var(--down)}
+.paper-empty{color:var(--faint); font-size:11.5px; padding:6px 16px 14px; line-height:1.5}
+.pp{padding:10px 16px; border-bottom:1px solid var(--line)}
+.pp-r1{display:flex; align-items:center; justify-content:space-between}
+.pp-inst{font-weight:600; font-size:12.5px}
+.pp-close{border:1px solid var(--line-2); background:var(--bg); border-radius:6px; padding:3px 10px; cursor:pointer; font-size:11px; font-weight:600}
+.pp-close:hover{background:var(--down); color:#fff; border-color:var(--down)}
+.pp-r2{display:flex; justify-content:space-between; font-size:11px; color:var(--sub); margin-top:4px}
 
 /* ---------- trade plan ---------- */
 .plan{margin:14px 16px; border:1px solid var(--line); border-radius:12px; overflow:hidden}
@@ -138,21 +176,6 @@ header{
 .why-txt{font-size:11.5px; line-height:1.45}
 .why-txt .f{font-weight:600}
 .why-txt .d{color:var(--sub)}
-.bt{border-top:1px solid var(--line)}
-.bt-bar{display:flex; align-items:center; gap:8px; padding:10px 15px}
-.bt-h{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--faint); flex:1}
-.bt-bar select{border:1px solid var(--line-2); border-radius:6px; padding:4px 7px; font-size:11.5px; background:var(--bg); color:var(--ink)}
-.bt-bar button{border:1px solid var(--ink); background:var(--ink); color:#fff; border-radius:6px; padding:5px 14px; font-size:12px; font-weight:600; cursor:pointer}
-.bt-bar button:hover{opacity:.88}
-.bt-bar button:disabled{opacity:.5; cursor:default}
-.bt-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:1px; background:var(--line); border-top:1px solid var(--line)}
-.bt-stat{background:var(--panel); padding:9px 12px}
-.bt-stat .bl{font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:var(--faint)}
-.bt-stat .bv{font-size:15px; font-weight:700; font-variant-numeric:tabular-nums; margin-top:2px}
-.bt-stat .bv.up{color:var(--up)} .bt-stat .bv.down{color:var(--down)}
-.bt-eq{display:block; width:100%; height:54px; margin:2px 0}
-.bt-note{font-size:10.5px; color:var(--faint); padding:6px 15px 10px; line-height:1.5}
-
 .plan-note{font-size:10.5px; color:var(--faint); padding:8px 15px; border-top:1px solid var(--line)}
 
 .chain-table{width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums}

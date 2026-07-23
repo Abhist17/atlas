@@ -21,9 +21,17 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["atr"] = ta.atr(out["high"], out["low"], out["close"], length=14)
     out["atr_pct"] = out["atr"] / out["close"] * 100
 
-    # EMAs for trend
+    # EMAs for trend (9/15 crossover is the quant entry core; 21 kept for legacy)
     out["ema9"] = ta.ema(out["close"], length=9)
+    out["ema15"] = ta.ema(out["close"], length=15)
     out["ema21"] = ta.ema(out["close"], length=21)
+
+    # ADX = trend-strength / regime filter (high = trending, low = chop)
+    try:
+        adx = ta.adx(out["high"], out["low"], out["close"], length=14)
+        out["adx"] = adx[f"ADX_14"] if adx is not None else np.nan
+    except Exception:
+        out["adx"] = np.nan
 
     # VWAP resets each trading day (intraday anchor)
     out["vwap"] = _session_vwap(out)

@@ -127,15 +127,69 @@ async def api_chain(symbol: str, expiry: str | None = None,
 
 @app.get("/api/levels")
 async def api_levels(symbol: str, email: str = Depends(require_user)):
-    from engine.levels import compute_levels
-    return JSONResponse(compute_levels(symbol))
+    from engine.quant_signal import compute_signal
+    return JSONResponse(compute_signal(symbol))
 
 
-@app.get("/api/backtest")
-async def api_backtest(symbol: str, days: int = 30, target_r: float = 2.0,
-                       email: str = Depends(require_user)):
-    from engine.backtest_signal import backtest_symbol
-    return JSONResponse(backtest_symbol(symbol, days=days, target_r=target_r))
+@app.get("/api/chart")
+async def api_chart(symbol: str, days: int = 2, interval: int = 5,
+                    email: str = Depends(require_user)):
+    """Candlestick + EMA data for the live chart."""
+    from data.live_feed import get_bars
+    from engine.indicators import add_indicators
+    feed = get_bars(symbol, days=days, interval=interval)
+    if not feed.get("ok"):
+        return JSONResponse({"ok": False, "error": feed.get("error")})
+    df = add_indicators(feed["bars"]).tail(120)
+    candles = [
+        {"t": str(r["timestamp"])[11:16], "o": round(float(r["open"]), 2),
+         "h": round(float(r["high"]), 2), "l": round(float(r["low"]), 2),
+         "c": round(float(r["close"]), 2),
+         "e9": None if _nan(r["ema9"]) else round(float(r["ema9"]), 2),
+         "e15": None if _nan(r["ema15"]) else round(float(r["ema15"]), 2)}
+        for _, r in df.iterrows()
+    ]
+    return JSONResponse({"ok": True, "symbol": symbol.upper(), "ltp": feed["ltp"],
+                         "is_live": feed["is_live"], "source": feed["source"],
+                         "candles": candles})
+
+
+def _nan(v):
+    try:
+        import math
+        return math.isnan(float(v))
+    except (TypeError, ValueError):
+        return True
+
+
+@app.get("/api/paper/positions")
+async def api_paper_positions(email: str = Depends(require_user)):
+    from engine import broker
+    from storage.journal import stats
+    try:
+        s = stats()
+    except Exception:
+        s = {}
+    return JSONResponse({"positions": broker.open_positions(), "stats": s})
+
+
+@app.post("/api/paper/buy")
+async def api_paper_buy(request: Request, email: str = Depends(require_user)):
+    from engine import broker
+    b = await request.json()
+    res = broker.place_order(
+        mode="paper", symbol=b["symbol"], expiry=b["expiry"],
+        strike=float(b["strike"]), opt_type=b["opt_type"], side="BUY",
+        lots=int(b.get("lots", 1)), ltp=float(b["ltp"]))
+    return JSONResponse(res, status_code=200 if res.get("ok") else 400)
+
+
+@app.post("/api/paper/close")
+async def api_paper_close(request: Request, email: str = Depends(require_user)):
+    from engine import broker
+    b = await request.json()
+    res = broker.close_position(b["id"], float(b["ltp"]))
+    return JSONResponse(res, status_code=200 if res.get("ok") else 400)
 
 
 if __name__ == "__main__":

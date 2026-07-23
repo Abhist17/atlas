@@ -25,6 +25,15 @@
         <span class="chip" data-f="put">Puts</span>
         <span class="chip" data-f="vol">Vol×</span>
       </div>
+      <div class="sortbar">
+        <label>Sort</label>
+        <select id="sortSel">
+          <option value="conv">Conviction</option>
+          <option value="chg_desc">% Chg (gainers)</option>
+          <option value="chg_asc">% Chg (losers)</option>
+          <option value="vol">Volume ×</option>
+        </select>
+      </div>
       <ul class="slist" id="slist"><li class="pos-empty">Scanning…</li></ul>
     </div>
 
@@ -40,6 +49,19 @@
           <select id="expiry"></select>
           <span class="meta" id="cMeta"></span>
         </div>
+      </div>
+      <div id="chartWrap" class="chart-wrap" style="display:none">
+        <div class="chart-top">
+          <span class="chart-price" id="chartPrice">—</span>
+          <span class="chart-live" id="chartLive"></span>
+          <select id="chartTf" class="chart-tf">
+            <option value="1">1m</option>
+            <option value="5" selected>5m</option>
+            <option value="15">15m</option>
+          </select>
+          <span class="chart-legend"><i class="e9"></i>EMA 9 <i class="e15"></i>EMA 15</span>
+        </div>
+        <div class="chart-svg" id="chartSvg"></div>
       </div>
       <div id="planWrap"></div>
       <table class="chain-table" id="chainTable" style="display:none">
@@ -64,7 +86,16 @@
           <span>Entry premium</span><span class="pj-px" id="pjEntry">—</span>
         </div>
         <div class="proj-rows" id="pjRows"></div>
-        <div class="proj-note">Premiums estimated with a ~0.5 ATM delta. Actual fills vary with IV &amp; time decay.</div>
+        <button class="paper-buy" id="paperBuy">Paper Buy · 1 lot</button>
+        <div class="proj-note">Premiums estimated with a ~0.5 ATM delta. Paper trades are simulated — practice with zero risk.</div>
+      </div>
+
+      <div class="paper-wrap">
+        <div class="paper-hd">
+          <h2 style="padding:0">Paper positions</h2>
+          <span class="paper-pnl" id="paperPnl">Realised ₹0</span>
+        </div>
+        <div id="paperList"><div class="paper-empty">No paper positions yet. Click a strike, then Paper Buy.</div></div>
       </div>
     </div>
   </div>
@@ -77,23 +108,33 @@
 
   // ---------------- screener ----------------
   const FILTERS={all:()=>true,call:r=>r.side==="CALL",put:r=>r.side==="PUT",vol:r=>r.vol_x_avg>=2};
+  const SORTS={
+    conv:(a,b)=>Math.abs(b.conviction)-Math.abs(a.conviction),
+    chg_desc:(a,b)=>b["chg_%"]-a["chg_%"],
+    chg_asc:(a,b)=>a["chg_%"]-b["chg_%"],
+    vol:(a,b)=>b.vol_x_avg-a.vol_x_avg,
+  };
+  let sortMode="conv";
   function renderList(){
     let d=rows.filter(FILTERS[filter]);
     if(query) d=d.filter(r=>r.symbol.includes(query.toUpperCase()));
-    d.sort((a,b)=>Math.abs(b.conviction)-Math.abs(a.conviction));
+    d.sort(SORTS[sortMode]||SORTS.conv);
     const el=document.getElementById("slist");
     if(!d.length){ el.innerHTML=`<li class="pos-empty">No matches.</li>`; return; }
     el.innerHTML=d.map(r=>{
       const up=r["chg_%"]>=0;
+      const volPct=Math.round((r.vol_x_avg-1)*100);   // volume vs 20-bar average
+      const volUp=volPct>=0;
       return `<li class="srow ${r.symbol===selSym?"active":""}" data-s="${r.symbol}">
         <div><div class="s-name">${r.symbol}<span class="side-tag ${r.side.toLowerCase()}">${r.side}</span></div>
-        <div class="s-sub">₹${r.ltp.toLocaleString("en-IN")} · V ${r.vol_x_avg}×</div></div>
+        <div class="s-sub">₹${r.ltp.toLocaleString("en-IN")} · Vol ${volUp?"+":""}${volPct}%</div></div>
         <div class="s-right"><div class="chg ${up?"up":"down"}"><span class="tri">${up?"▲":"▼"}</span> ${up?"+":""}${r["chg_%"]}%</div>
-        <div class="s-sub">RSI ${r.rsi}</div></div>
+        <div class="s-sub">V ${r.vol_x_avg}×</div></div>
       </li>`;
     }).join("");
     el.querySelectorAll(".srow").forEach(li=>li.onclick=()=>selectSymbol(li.dataset.s));
   }
+  document.getElementById("sortSel").onchange=e=>{sortMode=e.target.value;renderList();};
   async function loadScreen(){
     try{
       const res=await fetch("/api/screen?interval=5");
@@ -116,6 +157,7 @@
     document.getElementById("chainTable").style.display="none";
     document.getElementById("planWrap").innerHTML="";
     loadPlan(sym);
+    startChart(sym);
     const ex=await (await fetch("/api/expiries?symbol="+sym)).json();
     const sel=document.getElementById("expiry");
     sel.innerHTML=ex.expiries.map(e=>`<option>${e}</option>`).join("");
@@ -160,6 +202,72 @@
     if(atmIdx) body.querySelectorAll("tr")[atmIdx].scrollIntoView({block:"center"});
   }
 
+  // ---------------- live chart ----------------
+  let chartTimer=null, chartTf=5;
+  function startChart(sym){
+    if(chartTimer) clearInterval(chartTimer);
+    document.getElementById("chartWrap").style.display="block";
+    document.getElementById("chartSvg").innerHTML="";
+    document.getElementById("chartPrice").textContent="Loading…";
+    loadChart(sym);
+    chartTimer=setInterval(()=>{ if(sym===selSym) loadChart(sym); }, 10000);
+  }
+  document.getElementById("chartTf").onchange=e=>{ chartTf=+e.target.value; if(selSym) loadChart(selSym); };
+  async function loadChart(sym){
+    const days = chartTf===1 ? 3 : chartTf===15 ? 10 : 5;
+    let d;
+    try{ d=await (await fetch(`/api/chart?symbol=${sym}&days=${days}&interval=${chartTf}`)).json(); }catch(e){ return; }
+    if(sym!==selSym||!d.ok||!d.candles.length) return;
+    document.getElementById("chartPrice").textContent="₹"+d.ltp.toLocaleString("en-IN");
+    const lv=document.getElementById("chartLive");
+    lv.textContent=d.is_live?"● Live":"Delayed ~15m";
+    lv.className="chart-live "+(d.is_live?"on":"off");
+    renderChart(d.candles);
+  }
+  function renderChart(c){
+    const W=600,H=224,padT=10,padB=20,padR=50,padL=4;
+    const n=c.length, iw=(W-padL-padR)/n, bw=Math.max(1.4,iw*0.62);
+    let mn=Infinity,mx=-Infinity;
+    c.forEach(k=>{mn=Math.min(mn,k.l);mx=Math.max(mx,k.h);
+      if(k.e9!=null){mn=Math.min(mn,k.e9);mx=Math.max(mx,k.e9);}
+      if(k.e15!=null){mn=Math.min(mn,k.e15);mx=Math.max(mx,k.e15);}});
+    const rng=(mx-mn)||1, y=v=>padT+(mx-v)/rng*(H-padT-padB), x=i=>padL+i*iw+iw/2;
+    const plotR=W-padR;
+    let s="";
+    // price axis: gridlines + labels on the right
+    const TICKS=4;
+    for(let t=0;t<=TICKS;t++){
+      const val=mn+rng*t/TICKS, yy=y(val);
+      s+=`<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${plotR}" y2="${yy.toFixed(1)}" stroke="var(--line)" stroke-width="0.6"/>`;
+      s+=`<text x="${plotR+4}" y="${(yy+3).toFixed(1)}" class="ax-y">${val.toFixed(1)}</text>`;
+    }
+    // time axis: a few labels
+    const step=Math.max(1,Math.floor(n/5));
+    for(let i=0;i<n;i+=step){
+      s+=`<text x="${x(i).toFixed(1)}" y="${H-6}" class="ax-x" text-anchor="middle">${c[i].t}</text>`;
+    }
+    // candles
+    c.forEach((k,i)=>{
+      const up=k.c>=k.o, cx=x(i);
+      s+=`<line class="wick" x1="${cx.toFixed(1)}" y1="${y(k.h).toFixed(1)}" x2="${cx.toFixed(1)}" y2="${y(k.l).toFixed(1)}" stroke-width="1"/>`;
+      const yo=y(k.o),yc=y(k.c), top=Math.min(yo,yc), h=Math.max(1,Math.abs(yc-yo));
+      s+=`<rect class="${up?'cndl-up':'cndl-dn'}" x="${(cx-bw/2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" stroke-width="1"/>`;
+    });
+    // EMA overlays
+    const line=(key,col)=>{
+      const pts=c.map((k,i)=>k[key]==null?null:`${x(i).toFixed(1)},${y(k[key]).toFixed(1)}`).filter(Boolean).join(" ");
+      return pts?`<polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1.4"/>`:"";
+    };
+    s+=line("e9","var(--up)")+line("e15","var(--down)");
+    // live price line + right-edge label
+    const last=c[c.length-1], ly=y(last.c);
+    s+=`<line x1="${padL}" y1="${ly.toFixed(1)}" x2="${plotR}" y2="${ly.toFixed(1)}" stroke="var(--ink)" stroke-dasharray="3 2" stroke-width="0.9"/>`;
+    s+=`<rect x="${plotR}" y="${(ly-8).toFixed(1)}" width="${padR}" height="16" fill="var(--ink)"/>`;
+    s+=`<text x="${plotR+4}" y="${(ly+3.5).toFixed(1)}" class="ax-live">${last.c.toFixed(1)}</text>`;
+    document.getElementById("chartSvg").innerHTML=
+      `<svg viewBox="0 0 ${W} ${H}">${s}</svg>`;
+  }
+
   // ---------------- trade plan ----------------
   async function loadPlan(sym){
     const wrap=document.getElementById("planWrap");
@@ -201,60 +309,8 @@
       <div class="tps">${tps}</div>
       <div class="why"><div class="why-h">Why this ${p.bias} bias</div>${why}</div>
       <div class="plan-lvls">${lvls}</div>
-      <div class="bt">
-        <div class="bt-bar">
-          <span class="bt-h">Backtest this strategy</span>
-          <select id="btDays"><option value="15">15d</option><option value="30" selected>30d</option><option value="60">60d</option></select>
-          <select id="btR"><option value="1">1R</option><option value="1.5">1.5R</option><option value="2" selected>2R</option><option value="3">3R</option></select>
-          <button id="btRun">Run</button>
-        </div>
-        <div id="btOut"></div>
-      </div>
       <div class="plan-note">${p.note}</div>
     </div>`;
-    document.getElementById("btRun").onclick=runBacktest;
-  }
-
-  // ---------------- backtest ----------------
-  async function runBacktest(){
-    if(!selSym) return;
-    const days=document.getElementById("btDays").value, r=document.getElementById("btR").value;
-    const out=document.getElementById("btOut");
-    const btn=document.getElementById("btRun"); btn.disabled=true; btn.textContent="…";
-    out.innerHTML=`<div class="bt-note">Replaying ${days}d of 5-min bars…</div>`;
-    let d;
-    try{ d=await (await fetch(`/api/backtest?symbol=${selSym}&days=${days}&target_r=${r}`)).json(); }
-    catch(e){ out.innerHTML=`<div class="bt-note">Backtest failed.</div>`; btn.disabled=false; btn.textContent="Run"; return; }
-    btn.disabled=false; btn.textContent="Run";
-    if(!d.ok){ out.innerHTML=`<div class="bt-note">${d.error||"No result."}</div>`; return; }
-    if(!d.trades){ out.innerHTML=`<div class="bt-note">${d.note||"No trades."}</div>`; return; }
-    const pos=d.total_r>=0;
-    const stat=(l,v,cls="")=>`<div class="bt-stat"><div class="bl">${l}</div><div class="bv ${cls}">${v}</div></div>`;
-    out.innerHTML=`
-      <div class="bt-grid">
-        ${stat("Net R", (pos?"+":"")+d.total_r, pos?"up":"down")}
-        ${stat("Win rate", d.win_rate+"%")}
-        ${stat("Trades", d.trades)}
-        ${stat("Profit factor", d.profit_factor??"—", (d.profit_factor>=1?"up":"down"))}
-        ${stat("Avg R / trade", (d.avg_r>=0?"+":"")+d.avg_r, d.avg_r>=0?"up":"down")}
-        ${stat("Best / Worst", `+${d.best_r} / ${d.worst_r}`)}
-      </div>
-      ${equitySVG(d.equity, pos)}
-      <div class="bt-note">${d.wins}W / ${d.losses}L · exits at ${r}R target or 1.5·ATR stop, intraday square-off. Honest replay of the live signal — no look-ahead.</div>`;
-  }
-  function equitySVG(eq, pos){
-    if(!eq||eq.length<2) return "";
-    const w=268,h=54,pad=3;
-    const mn=Math.min(0,...eq), mx=Math.max(0,...eq), rng=(mx-mn)||1;
-    const x=i=>pad+i*(w-2*pad)/(eq.length-1);
-    const y=v=>h-pad-(v-mn)/rng*(h-2*pad);
-    const pts=eq.map((v,i)=>`${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
-    const zero=y(0).toFixed(1);
-    const col=pos?"var(--up)":"var(--down)";
-    return `<svg class="bt-eq" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
-      <line x1="0" y1="${zero}" x2="${w}" y2="${zero}" stroke="var(--line-2)" stroke-dasharray="3 3"/>
-      <polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1.6"/>
-    </svg>`;
   }
 
   // ---------------- option projection ----------------
@@ -281,7 +337,45 @@
     rowsEl.innerHTML=html;
   }
 
-  loadScreen();
+  // ---------------- paper trading ----------------
+  document.getElementById("paperBuy").onclick=async()=>{
+    if(!leg||!selSym) return;
+    const btn=document.getElementById("paperBuy"); btn.disabled=true; btn.textContent="…";
+    const res=await fetch("/api/paper/buy",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({symbol:selSym,expiry:selExpiry,strike:leg.strike,opt_type:leg.opt_type,ltp:leg.ltp,lots:1})});
+    const j=await res.json(); btn.disabled=false; btn.textContent="Paper Buy · 1 lot";
+    if(j.ok) loadPaper();
+    else alert(j.error||"Paper trade failed.");
+  };
+  async function loadPaper(){
+    let j; try{ j=await (await fetch("/api/paper/positions")).json(); }catch(e){ return; }
+    const real=(j.stats&&(j.stats.total_pnl??0))||0;
+    const rEl=document.getElementById("paperPnl");
+    rEl.textContent="Realised "+money(real);
+    rEl.className="paper-pnl "+(real>0?"up":real<0?"down":"");
+    const list=document.getElementById("paperList");
+    if(!j.positions.length){ list.innerHTML=`<div class="paper-empty">No paper positions yet. Click a strike, then Paper Buy.</div>`; return; }
+    list.innerHTML=j.positions.map(p=>`<div class="pp">
+      <div class="pp-r1"><span class="pp-inst">${p.symbol} ${Math.round(p.strike)} ${p.opt_type}</span>
+        <button class="pp-close" data-id="${p.id}" data-sym="${p.symbol}" data-exp="${p.expiry}"
+          data-strike="${p.strike}" data-t="${p.opt_type}" data-e="${p.entry}">Close</button></div>
+      <div class="pp-r2"><span>${p.lots} lot · qty ${p.qty}</span><span>entry ₹${p.entry}</span></div>
+    </div>`).join("");
+    list.querySelectorAll(".pp-close").forEach(b=>b.onclick=async()=>{
+      b.disabled=true; b.textContent="…";
+      let px=parseFloat(b.dataset.e);
+      try{
+        const c=await (await fetch(`/api/chain?symbol=${b.dataset.sym}&expiry=${encodeURIComponent(b.dataset.exp)}`)).json();
+        const row=c.rows.find(r=>Math.abs(r.strike-parseFloat(b.dataset.strike))<0.01);
+        if(row) px=b.dataset.t==="CE"?row.ce.ltp:row.pe.ltp;
+      }catch(e){}
+      await fetch("/api/paper/close",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({id:b.dataset.id,ltp:px})});
+      loadPaper();
+    });
+  }
+
+  loadScreen(); loadPaper();
   setInterval(loadScreen, 120000);
   </script>
 </body>

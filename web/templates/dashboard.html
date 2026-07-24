@@ -239,12 +239,12 @@
     for(let t=0;t<=TICKS;t++){
       const val=mn+rng*t/TICKS, yy=y(val);
       s+=`<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${plotR}" y2="${yy.toFixed(1)}" stroke="var(--line)" stroke-width="0.6"/>`;
-      s+=`<text x="${plotR+3}" y="${(yy+2).toFixed(1)}" class="ax-y" font-size="6">${Math.round(val)}</text>`;
+      s+=`<text x="${plotR+3}" y="${(yy+2).toFixed(1)}" class="ax-y" font-size="10">${Math.round(val)}</text>`;
     }
     // time axis: a few labels
     const step=Math.max(1,Math.floor(n/5));
     for(let i=0;i<n;i+=step){
-      s+=`<text x="${x(i).toFixed(1)}" y="${H-6}" class="ax-x" font-size="6" text-anchor="middle">${c[i].t}</text>`;
+      s+=`<text x="${x(i).toFixed(1)}" y="${H-6}" class="ax-x" font-size="10" text-anchor="middle">${c[i].t}</text>`;
     }
     // candles
     c.forEach((k,i)=>{
@@ -263,7 +263,7 @@
     const last=c[c.length-1], ly=y(last.c);
     s+=`<line x1="${padL}" y1="${ly.toFixed(1)}" x2="${plotR}" y2="${ly.toFixed(1)}" stroke="var(--ink)" stroke-dasharray="3 2" stroke-width="0.9"/>`;
     s+=`<rect x="${plotR}" y="${(ly-6).toFixed(1)}" width="${padR}" height="12" rx="2" fill="var(--ink)"/>`;
-    s+=`<text x="${plotR+3}" y="${(ly+2).toFixed(1)}" class="ax-live" font-size="6">${Math.round(last.c)}</text>`;
+    s+=`<text x="${plotR+3}" y="${(ly+2).toFixed(1)}" class="ax-live" font-size="10">${Math.round(last.c)}</text>`;
     document.getElementById("chartSvg").innerHTML=
       `<svg viewBox="0 0 ${W} ${H}">${s}</svg>`;
   }

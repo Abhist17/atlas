@@ -25,6 +25,7 @@ from data.market_context import get_context
 from data.yf_client import yfc
 from engine.directional import add_opening_range
 from engine.indicators import add_indicators
+from engine.prob_model import win_probability
 from utils.logger import get_logger
 
 log = get_logger("engine.alpha_signal")
@@ -95,11 +96,24 @@ def compute_signal(symbol: str, interval: int = 5) -> dict:
     rs_ok = (rs > 0.15) if long else (rs < -0.15)          # a leader in its direction
     rs_bad = (rs < -0.15) if long else (rs > 0.15)         # a laggard (against)
 
-    confidence = round(min(0.10 + aligned / total * 0.56
-                           + (0.14 if htf_ok else 0)
-                           + (0.12 if mkt_aligned else -0.12 if mkt_against else 0)
-                           + (0.08 if rs_ok else -0.08 if rs_bad else 0), 1.0), 2)
-    confidence = max(confidence, 0.0)
+    # heuristic confluence confidence (fallback)
+    heuristic = round(min(0.10 + aligned / total * 0.56
+                          + (0.14 if htf_ok else 0)
+                          + (0.12 if mkt_aligned else -0.12 if mkt_against else 0)
+                          + (0.08 if rs_ok else -0.08 if rs_bad else 0), 1.0), 2)
+
+    # calibrated win probability from the learned model (if trained)
+    ema50 = float(last["ema50"]) if not np.isnan(last.get("ema50", np.nan)) else ema15
+    win_prob = win_probability({
+        "close": ltp, "ema9": ema9, "ema15": ema15, "ema50": ema50, "atr": atr,
+        "macd_hist": macd_h, "rsi": rsi, "vwap": vwap, "adx": adx, "vol_x": vol_x})
+    if win_prob is not None:
+        # market/relative-strength context nudges the calibrated probability
+        confidence = win_prob + (0.05 if mkt_aligned else -0.05 if mkt_against else 0) \
+                     + (0.03 if rs_ok else -0.03 if rs_bad else 0)
+        confidence = round(min(max(confidence, 0.0), 1.0), 2)
+    else:
+        confidence = max(heuristic, 0.0)
 
     status, headline, trigger, entry = _decide(
         long, htf_bias, htf_ok, trending, adx, aligned, grade, fresh, bars_since,
@@ -168,7 +182,10 @@ def compute_signal(symbol: str, interval: int = 5) -> dict:
         "live": {"is_live": feed["is_live"], "source": feed["source"]},
         "market": {"name": mkt["name"], "bias": mkt_dir, "chg": mkt["chg"]},
         "rel_strength": rs,
-        "note": f"Grade {grade} · {aligned}/{total} aligned · 15m + {mkt['name']} filtered · not a prediction",
+        "win_prob": win_prob,
+        "note": (("Win prob from a model trained on historical outcomes · "
+                  if win_prob is not None else "")
+                 + f"Grade {grade} · {aligned}/{total} aligned · 15m + {mkt['name']} filtered · not a prediction"),
     }
 
 

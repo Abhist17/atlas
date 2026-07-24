@@ -265,12 +265,12 @@
     for(let t=0;t<=TICKS;t++){
       const val=mn+rng*t/TICKS, yy=y(val);
       s+=`<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${plotR}" y2="${yy.toFixed(1)}" stroke="var(--line)" stroke-width="0.6"/>`;
-      s+=`<text x="${plotR+3}" y="${(yy+2).toFixed(1)}" class="ax-y" font-size="10">${Math.round(val)}</text>`;
+      s+=`<text x="${plotR+3}" y="${(yy+2).toFixed(1)}" class="ax-y" font-size="10" style="fill:var(--faint)">${Math.round(val)}</text>`;
     }
     // time axis: a few labels
     const step=Math.max(1,Math.floor(n/5));
     for(let i=0;i<n;i+=step){
-      s+=`<text x="${x(i).toFixed(1)}" y="${H-6}" class="ax-x" font-size="10" text-anchor="middle">${c[i].t}</text>`;
+      s+=`<text x="${x(i).toFixed(1)}" y="${H-6}" class="ax-x" font-size="10" text-anchor="middle" style="fill:var(--faint)">${c[i].t}</text>`;
     }
     // candles
     c.forEach((k,i)=>{
@@ -289,7 +289,7 @@
     const last=c[c.length-1], ly=y(last.c);
     s+=`<line x1="${padL}" y1="${ly.toFixed(1)}" x2="${plotR}" y2="${ly.toFixed(1)}" stroke="var(--ink)" stroke-dasharray="3 2" stroke-width="0.9"/>`;
     s+=`<rect x="${plotR}" y="${(ly-6).toFixed(1)}" width="${padR}" height="12" rx="2" fill="var(--ink)"/>`;
-    s+=`<text x="${plotR+3}" y="${(ly+2).toFixed(1)}" class="ax-live" font-size="10">${Math.round(last.c)}</text>`;
+    s+=`<text x="${plotR+3}" y="${(ly+2).toFixed(1)}" class="ax-live" font-size="10" style="fill:var(--on-ink)">${Math.round(last.c)}</text>`;
     document.getElementById("chartSvg").innerHTML=
       `<svg viewBox="0 0 ${W} ${H}">${s}</svg>`;
   }
@@ -306,6 +306,8 @@
     plan=p; if(leg) renderProjection();
     const long=p.bias==="LONG", dirCls=long?"long":"short", col=long?"up":"down";
     const cf=Math.round(p.confidence*100);
+    const wp=p.win_prob!=null?Math.round(p.win_prob*100):null;
+    const convLabel=wp!=null?`Win prob ${wp}%`:`Conviction ${cf}%`;
     const stCls={ENTER:"enter",WAIT:"wait",AVOID:"avoid"}[p.status]||"wait";
     const lvls=Object.entries(p.levels).map(([k,v])=>`<span class="lvl">${k}<b>${v}</b></span>`).join("");
     const tps=p.targets.map(t=>`<div class="tp"><div class="lab">TP${t.rr} · ${t.rr}R</div>
@@ -325,8 +327,8 @@
       </div>
       <div class="plan-top">
         <div class="plan-bias"><span class="opt">ATR ${p.atr} (${p.atr_pct}%) · ${p.extension>0?"+":""}${p.extension} ATR from VWAP</span></div>
-        <div class="plan-conf">Conviction ${cf}%
-          <div class="conf-track"><div class="conf-fill" style="width:${cf}%;background:var(--${col})"></div></div></div>
+        <div class="plan-conf">${convLabel}
+          <div class="conf-track"><div class="conf-fill" style="width:${wp!=null?wp:cf}%;background:var(--${col})"></div></div></div>
       </div>
       <div class="plan-grid">
         <div class="plan-cell"><div class="l">Entry ${p.status==="ENTER"?"(now)":"(planned)"}</div><div class="v">${p.entry}</div>

@@ -21,6 +21,7 @@ from __future__ import annotations
 import numpy as np
 
 from data.live_feed import get_bars
+from data.market_context import get_context
 from data.yf_client import yfc
 from engine.directional import add_opening_range
 from engine.indicators import add_indicators
@@ -80,11 +81,26 @@ def compute_signal(symbol: str, interval: int = 5) -> dict:
     vwap_ok = (ltp > vwap) if long else (ltp < vwap)
     ext = ((ltp - ema15) / atr) if long else ((ema15 - ltp) / atr)
 
-    confidence = round(min(0.15 + aligned / total * 0.7 + (0.15 if htf_ok else 0), 1.0), 2)
+    # broad-market / sector context (NIFTY or BANKNIFTY)
+    mkt = get_context(symbol)
+    mkt_dir = mkt["bias"]
+    mkt_against = mkt_dir != 0 and ((mkt_dir > 0) != long)
+    mkt_aligned = mkt_dir != 0 and ((mkt_dir > 0) == long)
+
+    confidence = round(min(0.12 + aligned / total * 0.62
+                           + (0.14 if htf_ok else 0)
+                           + (0.12 if mkt_aligned else -0.12 if mkt_against else 0), 1.0), 2)
+    confidence = max(confidence, 0.0)
 
     status, headline, trigger, entry = _decide(
         long, htf_bias, htf_ok, trending, adx, aligned, grade, fresh, bars_since,
         cross_dir, vwap_ok, ext, ltp, ema15, vwap)
+
+    # market gate: never ENTER straight into a broad market moving against you
+    if status == "ENTER" and mkt_against:
+        status = "WAIT"
+        headline = f"{mkt['name']} is moving {'up' if mkt_dir>0 else 'down'} — against this {('long' if long else 'short')}."
+        trigger = f"Wait for {mkt['name']} to turn, or stand aside."
 
     risk = _ATR_STOP * atr
     if long:
@@ -114,6 +130,11 @@ def compute_signal(symbol: str, interval: int = 5) -> dict:
                  "text": v["text"]} for v in votes]
     factors.append({"factor": "Regime (ADX)", "dir": 0,
                     "text": f"ADX {adx:.0f} — {'trending' if trending else 'choppy'}"})
+    mkt_txt = {1: "up", -1: "down", 0: "flat"}[mkt_dir]
+    factors.append({"factor": f"Market ({mkt['name']})",
+                    "dir": mkt_dir if mkt_aligned else -1 if mkt_against else 0,
+                    "text": f"{mkt['name']} {mkt_txt} ({mkt['chg']:+.2f}%) — "
+                            f"{'aligned' if mkt_aligned else 'against, caution' if mkt_against else 'neutral'}"})
 
     return {
         "symbol": symbol, "ok": True, "ltp": round(ltp, 2),
@@ -132,7 +153,8 @@ def compute_signal(symbol: str, interval: int = 5) -> dict:
         "levels": {k: v for k, v in levels.items() if v is not None},
         "factors": factors,
         "live": {"is_live": feed["is_live"], "source": feed["source"]},
-        "note": f"Grade {grade} · {aligned}/{total} factors aligned · 15m-filtered · not a prediction",
+        "market": {"name": mkt["name"], "bias": mkt_dir, "chg": mkt["chg"]},
+        "note": f"Grade {grade} · {aligned}/{total} aligned · 15m + {mkt['name']} filtered · not a prediction",
     }
 
 

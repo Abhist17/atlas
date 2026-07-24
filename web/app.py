@@ -95,7 +95,10 @@ async def logout():
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request, email: str = Depends(require_user)):
     user = auth.get_user(email) or {"name": email}
-    return templates.TemplateResponse(request, "dashboard.html", {"user": user})
+    resp = templates.TemplateResponse(request, "dashboard.html", {"user": user})
+    # never cache the app shell, so code updates always reach the browser
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
 
 
 # ---------------------------------------------------------------- API

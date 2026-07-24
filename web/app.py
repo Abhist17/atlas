@@ -66,7 +66,11 @@ async def login(request: Request, email: str = Form(...)):
         return templates.TemplateResponse(request, "login.html",
                                           {"error": "Enter a valid email address."})
     code = auth.generate_otp(email)
-    auth.send_otp_email(email, code)   # emails it if SMTP configured, else dev mode
+    sent, info = auth.send_otp_email(email, code)   # real email if SMTP set, else dev
+    if auth.smtp_configured() and not sent:
+        return templates.TemplateResponse(request, "login.html",
+                                          {"error": f"Couldn't send the email ({info}). "
+                                                    "Check your SMTP settings in .env."})
     return RedirectResponse(f"/verify?email={email}", status_code=303)
 
 

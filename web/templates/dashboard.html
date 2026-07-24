@@ -5,11 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Atlas</title>
   <script>try{document.documentElement.setAttribute('data-theme',localStorage.getItem('atlas_theme')||'light');}catch(e){}</script>
-  <link rel="stylesheet" href="/static/style.css?v=2">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230a0a0a'/><path d='M7 24 L16 7 L25 24' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/><path d='M11.5 18 H20.5' stroke='%23fff' stroke-width='3' stroke-linecap='round'/></svg>">
+  <link rel="stylesheet" href="/static/style.css?v=3">
 </head>
 <body>
   <header>
-    <div class="brand"><span class="logo">A</span> Atlas</div>
+    <div class="brand"><span class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 19 L12 5 L19.5 19"/><path d="M8.2 13.6 H15.8"/></svg></span> Atlas</div>
     <div class="right">
       <button id="themeBtn" class="theme-btn" aria-label="Toggle dark mode" title="Toggle dark mode"></button>
       <span class="who"><span class="avatar">{{ user.name[0]|upper }}</span>{{ user.name }}</span>
@@ -31,6 +32,7 @@
         <label>Sort</label>
         <select id="sortSel">
           <option value="conv">Conviction</option>
+          <option value="rs">Rel. strength (vs index)</option>
           <option value="chg_desc">% Chg (gainers)</option>
           <option value="chg_asc">% Chg (losers)</option>
           <option value="vol">Volume ×</option>
@@ -88,16 +90,7 @@
           <span>Entry premium</span><span class="pj-px" id="pjEntry">—</span>
         </div>
         <div class="proj-rows" id="pjRows"></div>
-        <button class="paper-buy" id="paperBuy">Paper Buy · 1 lot</button>
-        <div class="proj-note">Premiums estimated with a ~0.5 ATM delta. Paper trades are simulated — practice with zero risk.</div>
-      </div>
-
-      <div class="paper-wrap">
-        <div class="paper-hd">
-          <h2 style="padding:0">Paper positions</h2>
-          <span class="paper-pnl" id="paperPnl">Realised ₹0</span>
-        </div>
-        <div id="paperList"><div class="paper-empty">No paper positions yet. Click a strike, then Paper Buy.</div></div>
+        <div class="proj-note">Premiums estimated with a ~0.5 ATM delta. Actual fills vary with IV &amp; time decay.</div>
       </div>
     </div>
   </div>
@@ -130,6 +123,7 @@
     chg_desc:(a,b)=>b["chg_%"]-a["chg_%"],
     chg_asc:(a,b)=>a["chg_%"]-b["chg_%"],
     vol:(a,b)=>b.vol_x_avg-a.vol_x_avg,
+    rs:(a,b)=>(b.rs??-99)-(a.rs??-99),
   };
   let sortMode="conv";
   function renderList(){
@@ -146,7 +140,7 @@
         <div><div class="s-name">${r.symbol}<span class="side-tag ${r.side.toLowerCase()}">${r.side}</span></div>
         <div class="s-sub">₹${r.ltp.toLocaleString("en-IN")} · Vol ${volUp?"+":""}${volPct}%</div></div>
         <div class="s-right"><div class="chg ${up?"up":"down"}"><span class="tri">${up?"▲":"▼"}</span> ${up?"+":""}${r["chg_%"]}%</div>
-        <div class="s-sub">V ${r.vol_x_avg}×</div></div>
+        <div class="s-sub">${r.rs!=null?"RS "+(r.rs>=0?"+":"")+r.rs+"%":"V "+r.vol_x_avg+"×"}</div></div>
       </li>`;
     }).join("");
     el.querySelectorAll(".srow").forEach(li=>li.onclick=()=>selectSymbol(li.dataset.s));
@@ -371,45 +365,7 @@
     rowsEl.innerHTML=html;
   }
 
-  // ---------------- paper trading ----------------
-  document.getElementById("paperBuy").onclick=async()=>{
-    if(!leg||!selSym) return;
-    const btn=document.getElementById("paperBuy"); btn.disabled=true; btn.textContent="…";
-    const res=await fetch("/api/paper/buy",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({symbol:selSym,expiry:selExpiry,strike:leg.strike,opt_type:leg.opt_type,ltp:leg.ltp,lots:1})});
-    const j=await res.json(); btn.disabled=false; btn.textContent="Paper Buy · 1 lot";
-    if(j.ok) loadPaper();
-    else alert(j.error||"Paper trade failed.");
-  };
-  async function loadPaper(){
-    let j; try{ j=await (await fetch("/api/paper/positions")).json(); }catch(e){ return; }
-    const real=(j.stats&&(j.stats.total_pnl??0))||0;
-    const rEl=document.getElementById("paperPnl");
-    rEl.textContent="Realised "+money(real);
-    rEl.className="paper-pnl "+(real>0?"up":real<0?"down":"");
-    const list=document.getElementById("paperList");
-    if(!j.positions.length){ list.innerHTML=`<div class="paper-empty">No paper positions yet. Click a strike, then Paper Buy.</div>`; return; }
-    list.innerHTML=j.positions.map(p=>`<div class="pp">
-      <div class="pp-r1"><span class="pp-inst">${p.symbol} ${Math.round(p.strike)} ${p.opt_type}</span>
-        <button class="pp-close" data-id="${p.id}" data-sym="${p.symbol}" data-exp="${p.expiry}"
-          data-strike="${p.strike}" data-t="${p.opt_type}" data-e="${p.entry}">Close</button></div>
-      <div class="pp-r2"><span>${p.lots} lot · qty ${p.qty}</span><span>entry ₹${p.entry}</span></div>
-    </div>`).join("");
-    list.querySelectorAll(".pp-close").forEach(b=>b.onclick=async()=>{
-      b.disabled=true; b.textContent="…";
-      let px=parseFloat(b.dataset.e);
-      try{
-        const c=await (await fetch(`/api/chain?symbol=${b.dataset.sym}&expiry=${encodeURIComponent(b.dataset.exp)}`)).json();
-        const row=c.rows.find(r=>Math.abs(r.strike-parseFloat(b.dataset.strike))<0.01);
-        if(row) px=b.dataset.t==="CE"?row.ce.ltp:row.pe.ltp;
-      }catch(e){}
-      await fetch("/api/paper/close",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({id:b.dataset.id,ltp:px})});
-      loadPaper();
-    });
-  }
-
-  loadScreen(); loadPaper();
+  loadScreen();
   setInterval(loadScreen, 120000);
   </script>
 </body>

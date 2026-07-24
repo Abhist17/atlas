@@ -162,36 +162,6 @@ def _nan(v):
         return True
 
 
-@app.get("/api/paper/positions")
-async def api_paper_positions(email: str = Depends(require_user)):
-    from engine import broker
-    from storage.journal import stats
-    try:
-        s = stats()
-    except Exception:
-        s = {}
-    return JSONResponse({"positions": broker.open_positions(), "stats": s})
-
-
-@app.post("/api/paper/buy")
-async def api_paper_buy(request: Request, email: str = Depends(require_user)):
-    from engine import broker
-    b = await request.json()
-    res = broker.place_order(
-        mode="paper", symbol=b["symbol"], expiry=b["expiry"],
-        strike=float(b["strike"]), opt_type=b["opt_type"], side="BUY",
-        lots=int(b.get("lots", 1)), ltp=float(b["ltp"]))
-    return JSONResponse(res, status_code=200 if res.get("ok") else 400)
-
-
-@app.post("/api/paper/close")
-async def api_paper_close(request: Request, email: str = Depends(require_user)):
-    from engine import broker
-    b = await request.json()
-    res = broker.close_position(b["id"], float(b["ltp"]))
-    return JSONResponse(res, status_code=200 if res.get("ok") else 400)
-
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("web.app:app", host="0.0.0.0", port=8000, reload=False)

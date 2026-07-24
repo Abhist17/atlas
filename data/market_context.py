@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import time
 
-import numpy as np
 import pandas as pd
 import yfinance as yf
 
@@ -60,6 +59,11 @@ def _index_bias(ticker: str) -> dict:
         log.debug("index bias failed for %s: %s", ticker, e)
     _cache[ticker] = (time.time(), out)
     return out
+
+
+def index_change(name: str = "NIFTY") -> float:
+    """Intraday % change of an index (NIFTY / BANKNIFTY)."""
+    return _index_bias(_INDEX.get(name, "^NSEI"))["chg"]
 
 
 def get_context(symbol: str) -> dict:

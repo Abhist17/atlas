@@ -81,6 +81,16 @@ def screen_nse(interval: int = 5, symbols: list[str] | None = None,
             rows.append(r)
 
     out = pd.DataFrame(rows)
+    if not out.empty:
+        # Relative strength vs the broad market: a stock up 1% while NIFTY is up
+        # 2% is actually weak. rs = excess return over NIFTY; rs_rank = percentile.
+        try:
+            from data.market_context import index_change
+            nifty = index_change("NIFTY")
+        except Exception:
+            nifty = 0.0
+        out["rs"] = (out["chg_%"] - nifty).round(2)
+        out["rs_rank"] = (out["rs"].rank(pct=True) * 100).round(0).astype(int)
     log.info("NSE screen: %d/%d stocks analysed", len(out), len(symbols))
     return out
 

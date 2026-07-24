@@ -87,9 +87,18 @@ def compute_signal(symbol: str, interval: int = 5) -> dict:
     mkt_against = mkt_dir != 0 and ((mkt_dir > 0) != long)
     mkt_aligned = mkt_dir != 0 and ((mkt_dir > 0) == long)
 
-    confidence = round(min(0.12 + aligned / total * 0.62
+    # relative strength: stock's intraday move vs the market (excess return)
+    _tday = ind[ind["timestamp"].astype(str).str[:10] == str(last["timestamp"])[:10]]
+    day_open = float(_tday["open"].iloc[0]) if not _tday.empty else ltp
+    stock_chg = (ltp / day_open - 1) * 100 if day_open else 0.0
+    rs = round(stock_chg - mkt["chg"], 2)                 # + = outperforming
+    rs_ok = (rs > 0.15) if long else (rs < -0.15)          # a leader in its direction
+    rs_bad = (rs < -0.15) if long else (rs > 0.15)         # a laggard (against)
+
+    confidence = round(min(0.10 + aligned / total * 0.56
                            + (0.14 if htf_ok else 0)
-                           + (0.12 if mkt_aligned else -0.12 if mkt_against else 0), 1.0), 2)
+                           + (0.12 if mkt_aligned else -0.12 if mkt_against else 0)
+                           + (0.08 if rs_ok else -0.08 if rs_bad else 0), 1.0), 2)
     confidence = max(confidence, 0.0)
 
     status, headline, trigger, entry = _decide(
@@ -135,6 +144,10 @@ def compute_signal(symbol: str, interval: int = 5) -> dict:
                     "dir": mkt_dir if mkt_aligned else -1 if mkt_against else 0,
                     "text": f"{mkt['name']} {mkt_txt} ({mkt['chg']:+.2f}%) — "
                             f"{'aligned' if mkt_aligned else 'against, caution' if mkt_against else 'neutral'}"})
+    factors.append({"factor": "Relative strength",
+                    "dir": (1 if long else -1) if rs_ok else (-1 if rs_bad else 0),
+                    "text": f"{'Out' if rs > 0 else 'Under'}performing {mkt['name']} by {rs:+.2f}% — "
+                            f"{'leader' if rs_ok else 'laggard, caution' if rs_bad else 'in line'}"})
 
     return {
         "symbol": symbol, "ok": True, "ltp": round(ltp, 2),
@@ -154,6 +167,7 @@ def compute_signal(symbol: str, interval: int = 5) -> dict:
         "factors": factors,
         "live": {"is_live": feed["is_live"], "source": feed["source"]},
         "market": {"name": mkt["name"], "bias": mkt_dir, "chg": mkt["chg"]},
+        "rel_strength": rs,
         "note": f"Grade {grade} · {aligned}/{total} aligned · 15m + {mkt['name']} filtered · not a prediction",
     }
 

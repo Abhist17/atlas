@@ -5,12 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Atlas — Sign in</title>
   <script>try{document.documentElement.setAttribute("data-theme",localStorage.getItem("atlas_theme")||"light");}catch(e){}</script>
-  <link rel="stylesheet" href="/static/style.css?v=2">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230a0a0a'/><path d='M7 24 L16 7 L25 24' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/><path d='M11.5 18 H20.5' stroke='%23fff' stroke-width='3' stroke-linecap='round'/></svg>">
+  <link rel="stylesheet" href="/static/style.css?v=3">
 </head>
 <body>
   <div class="auth-wrap">
     <div class="auth-card">
-      <div class="brand">📈 Atlas<span class="dot">.</span></div>
+      <div class="brand"><span class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 19 L12 5 L19.5 19"/><path d="M8.2 13.6 H15.8"/></svg></span> Atlas<span class="dot">.</span></div>
       <div class="sub">Intraday NSE stock screener</div>
       <form method="post" action="/login">
         <label for="email">Email</label>

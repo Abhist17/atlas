@@ -99,6 +99,7 @@
   // ---------------- state ----------------
   let rows=[], filter="all", query="", selSym=null, selExpiry=null, chain=null;
   let plan=null, leg=null; // leg = {strike, opt_type, ltp}
+  let lastCandles=null;    // for re-rendering the chart on theme toggle
   const money = v => "₹"+Number(v).toLocaleString("en-IN",{maximumFractionDigits:2});
 
   // ---------------- theme ----------------
@@ -108,6 +109,7 @@
   function applyTheme(t){
     document.documentElement.setAttribute("data-theme",t);
     const b=document.getElementById("themeBtn"); if(b) b.innerHTML=t==="dark"?SUN:MOON;
+    if(lastCandles) renderChart(lastCandles);   // recolour chart for the new theme
   }
   applyTheme(theme);
   document.getElementById("themeBtn").onclick=()=>{
@@ -257,39 +259,47 @@
     c.forEach(k=>{mn=Math.min(mn,k.l);mx=Math.max(mx,k.h);
       if(k.e9!=null){mn=Math.min(mn,k.e9);mx=Math.max(mx,k.e9);}
       if(k.e15!=null){mn=Math.min(mn,k.e15);mx=Math.max(mx,k.e15);}});
+    lastCandles=c;
     const rng=(mx-mn)||1, y=v=>padT+(mx-v)/rng*(H-padT-padB), x=i=>padL+i*iw+iw/2;
     const plotR=W-padR;
+    // resolve theme colours to literal values (SVG built via innerHTML doesn't
+    // reliably inherit CSS var() from classes, so we inject real colours)
+    const cs=getComputedStyle(document.documentElement);
+    const C=k=>(cs.getPropertyValue(k)||"").trim();
+    const cInk=C("--ink")||"#0a0a0a", cFaint=C("--faint")||"#888",
+          cLine=C("--line")||"#ddd", cOnInk=C("--on-ink")||"#fff",
+          cUp=C("--up")||"#0a8f4f", cDown=C("--down")||"#d13b3b";
     let s="";
     // price axis: gridlines + labels on the right
     const TICKS=4;
     for(let t=0;t<=TICKS;t++){
       const val=mn+rng*t/TICKS, yy=y(val);
-      s+=`<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${plotR}" y2="${yy.toFixed(1)}" stroke="var(--line)" stroke-width="0.6"/>`;
-      s+=`<text x="${plotR+3}" y="${(yy+2).toFixed(1)}" class="ax-y" font-size="10" style="fill:var(--faint)">${Math.round(val)}</text>`;
+      s+=`<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${plotR}" y2="${yy.toFixed(1)}" stroke="${cLine}" stroke-width="0.6"/>`;
+      s+=`<text x="${plotR+3}" y="${(yy+2).toFixed(1)}" font-size="10" fill="${cFaint}">${Math.round(val)}</text>`;
     }
     // time axis: a few labels
     const step=Math.max(1,Math.floor(n/5));
     for(let i=0;i<n;i+=step){
-      s+=`<text x="${x(i).toFixed(1)}" y="${H-6}" class="ax-x" font-size="10" text-anchor="middle" style="fill:var(--faint)">${c[i].t}</text>`;
+      s+=`<text x="${x(i).toFixed(1)}" y="${H-6}" font-size="10" text-anchor="middle" fill="${cFaint}">${c[i].t}</text>`;
     }
     // candles
     c.forEach((k,i)=>{
       const up=k.c>=k.o, cx=x(i);
-      s+=`<line class="wick" x1="${cx.toFixed(1)}" y1="${y(k.h).toFixed(1)}" x2="${cx.toFixed(1)}" y2="${y(k.l).toFixed(1)}" stroke-width="1"/>`;
+      s+=`<line x1="${cx.toFixed(1)}" y1="${y(k.h).toFixed(1)}" x2="${cx.toFixed(1)}" y2="${y(k.l).toFixed(1)}" stroke="${cFaint}" stroke-width="1"/>`;
       const yo=y(k.o),yc=y(k.c), top=Math.min(yo,yc), h=Math.max(1,Math.abs(yc-yo));
-      s+=`<rect class="${up?'cndl-up':'cndl-dn'}" x="${(cx-bw/2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" stroke-width="1"/>`;
+      s+=`<rect x="${(cx-bw/2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${up?'none':cInk}" stroke="${cInk}" stroke-width="1"/>`;
     });
     // EMA overlays
     const line=(key,col)=>{
       const pts=c.map((k,i)=>k[key]==null?null:`${x(i).toFixed(1)},${y(k[key]).toFixed(1)}`).filter(Boolean).join(" ");
       return pts?`<polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1.4"/>`:"";
     };
-    s+=line("e9","var(--up)")+line("e15","var(--down)");
+    s+=line("e9",cUp)+line("e15",cDown);
     // live price line + right-edge label
     const last=c[c.length-1], ly=y(last.c);
-    s+=`<line x1="${padL}" y1="${ly.toFixed(1)}" x2="${plotR}" y2="${ly.toFixed(1)}" stroke="var(--ink)" stroke-dasharray="3 2" stroke-width="0.9"/>`;
-    s+=`<rect x="${plotR}" y="${(ly-6).toFixed(1)}" width="${padR}" height="12" rx="2" fill="var(--ink)"/>`;
-    s+=`<text x="${plotR+3}" y="${(ly+2).toFixed(1)}" class="ax-live" font-size="10" style="fill:var(--on-ink)">${Math.round(last.c)}</text>`;
+    s+=`<line x1="${padL}" y1="${ly.toFixed(1)}" x2="${plotR}" y2="${ly.toFixed(1)}" stroke="${cInk}" stroke-dasharray="3 2" stroke-width="0.9"/>`;
+    s+=`<rect x="${plotR}" y="${(ly-6).toFixed(1)}" width="${padR}" height="12" rx="2" fill="${cInk}"/>`;
+    s+=`<text x="${plotR+3}" y="${(ly+2).toFixed(1)}" font-size="10" fill="${cOnInk}">${Math.round(last.c)}</text>`;
     document.getElementById("chartSvg").innerHTML=
       `<svg viewBox="0 0 ${W} ${H}">${s}</svg>`;
   }

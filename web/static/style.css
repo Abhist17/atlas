@@ -1,9 +1,18 @@
 :root{
   --bg:#ffffff; --panel:#ffffff; --raise:#fafafa; --line:#e6e6e6; --line-2:#d4d4d4;
   --ink:#0a0a0a; --sub:#6b6b6b; --faint:#9a9a9a;
+  --on-ink:#ffffff; --on-ink-dim:rgba(255,255,255,.72);
+  --soft:#f0f0f0;
   --sel:#0a0a0a; --sel-ink:#ffffff;
   --up:#0a8f4f; --up-bg:#e9f7ef; --down:#d13b3b; --down-bg:#fdecec;
   --mono:"SF Mono",ui-monospace,"Roboto Mono",Menlo,Consolas,monospace;
+}
+:root[data-theme="dark"]{
+  --bg:#0e0f11; --panel:#16181c; --raise:#1c1f24; --line:#282c33; --line-2:#3a4049;
+  --ink:#e8eaed; --sub:#9aa0aa; --faint:#6b7280;
+  --on-ink:#0e0f11; --on-ink-dim:rgba(14,15,17,.66);
+  --soft:#1c1f24;
+  --up:#3fce87; --up-bg:#13291d; --down:#ff6470; --down-bg:#2b1518;
 }
 *{box-sizing:border-box}
 body{
@@ -20,14 +29,17 @@ header{
   position:sticky; top:0; z-index:20;
 }
 .brand{display:flex; align-items:center; gap:9px; font-weight:700; font-size:15px; letter-spacing:.06em; text-transform:uppercase}
-.logo{width:24px; height:24px; border-radius:5px; background:var(--ink); color:#fff;
+.logo{width:24px; height:24px; border-radius:5px; background:var(--ink); color:var(--on-ink);
   display:grid; place-items:center; font-size:13px; font-weight:800}
 .right{display:flex; align-items:center; gap:14px; font-size:12.5px; color:var(--sub)}
 .who{display:flex; align-items:center; gap:7px}
 .avatar{width:22px; height:22px; border-radius:50%; border:1px solid var(--line-2);
   display:grid; place-items:center; font-size:11px; font-weight:600; color:var(--ink)}
 .right a{color:var(--sub); text-decoration:none; padding:5px 11px; border:1px solid var(--line-2); border-radius:6px}
-.right a:hover{color:#fff; background:var(--ink); border-color:var(--ink)}
+.right a:hover{color:var(--on-ink); background:var(--ink); border-color:var(--ink)}
+.theme-btn{display:grid; place-items:center; width:30px; height:28px; padding:0; cursor:pointer;
+  color:var(--sub); background:var(--bg); border:1px solid var(--line-2); border-radius:6px}
+.theme-btn:hover{color:var(--ink); border-color:var(--ink)}
 
 /* ---------- layout ---------- */
 .grid{display:grid; grid-template-columns:260px 1fr 300px; gap:0; height:calc(100vh - 49px)}
@@ -44,7 +56,7 @@ header{
 .chips{display:flex; gap:5px; padding:0 14px 10px; flex-wrap:wrap}
 .chip{border:1px solid var(--line-2); background:var(--bg); color:var(--sub);
   padding:4px 10px; border-radius:20px; font-size:11.5px; cursor:pointer}
-.chip.active{background:var(--ink); color:#fff; border-color:var(--ink)}
+.chip.active{background:var(--ink); color:var(--on-ink); border-color:var(--ink)}
 .sortbar{display:flex; align-items:center; gap:8px; padding:0 14px 10px}
 .sortbar label{font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--faint)}
 .sortbar select{flex:1; border:1px solid var(--line-2); border-radius:7px; padding:5px 9px; font-size:12px; background:var(--bg); color:var(--ink)}
@@ -52,15 +64,15 @@ header{
 .srow{display:flex; align-items:center; justify-content:space-between; gap:8px;
   padding:9px 16px; cursor:pointer; border-bottom:1px solid var(--line)}
 .srow:hover{background:var(--raise)}
-.srow.active{background:var(--ink); color:#fff}
-.srow.active .s-sub, .srow.active .chg{color:#d0d0d0}
+.srow.active{background:var(--ink); color:var(--on-ink)}
+.srow.active .s-sub, .srow.active .chg{color:var(--on-ink-dim)}
 .s-name{font-weight:600; font-size:13px}
 .s-sub{font-size:11px; color:var(--faint); font-variant-numeric:tabular-nums}
 .s-right{text-align:right}
 .chg{font-size:12px; font-variant-numeric:tabular-nums}
 .chg.up{color:var(--up)} .chg.down{color:var(--down)}
 .chg .tri{font-size:9px}
-.srow.active .chg.up{color:#7fe0a8} .srow.active .chg.down{color:#f2a3a3}
+.srow.active .chg.up{color:var(--on-ink-dim)} .srow.active .chg.down{color:var(--on-ink-dim)}
 .side-tag.call{color:var(--up)} .side-tag.put{color:var(--down)}
 .side-tag{font-size:10px; font-weight:700; letter-spacing:.04em; border:1px solid currentColor;
   padding:0 4px; border-radius:3px; margin-left:6px}
@@ -94,7 +106,7 @@ header{
 .wick{stroke:var(--faint)}
 .ax-y{fill:var(--faint); font-size:10px; font-variant-numeric:tabular-nums}
 .ax-x{fill:var(--faint); font-size:10px; font-variant-numeric:tabular-nums}
-.ax-live{fill:#fff; font-size:10px; font-weight:700; font-variant-numeric:tabular-nums}
+.ax-live{fill:var(--on-ink); font-size:10px; font-weight:700; font-variant-numeric:tabular-nums}
 
 /* ---------- signal banner ---------- */
 .signal{padding:13px 15px; color:#fff}
@@ -104,7 +116,7 @@ header{
 .sig-l{display:flex; align-items:center; gap:10px; margin-bottom:6px}
 .sig-status{font-size:15px; font-weight:800; letter-spacing:.08em}
 .signal .bias-badge{background:rgba(255,255,255,.22); color:#fff; padding:3px 9px; font-size:11px}
-.grade-badge{background:#fff; color:var(--ink); padding:3px 9px; border-radius:6px; font-size:11px; font-weight:800; letter-spacing:.03em}
+.grade-badge{background:#fff; color:#0a0a0a; padding:3px 9px; border-radius:6px; font-size:11px; font-weight:800; letter-spacing:.03em}
 .sig-head{font-size:13.5px; font-weight:600}
 .sig-trig{font-size:12px; opacity:.92; margin-top:3px}
 
@@ -185,15 +197,15 @@ header{
 .chain-table td{padding:0; text-align:center; border-bottom:1px solid var(--line)}
 .chain-table .strike{font-weight:700; width:82px; background:var(--raise)}
 .cell{padding:9px 8px; cursor:pointer}
-.cell:hover{background:var(--ink); color:#fff}
+.cell:hover{background:var(--ink); color:var(--on-ink)}
 .cell .ltp{font-weight:600; font-size:13.5px}
 .cell.ce .ltp{color:var(--up)} .cell.pe .ltp{color:var(--down)}
 .cell .oi{font-size:10px; color:var(--faint)}
-.cell:hover .ltp{color:#fff}
-.cell:hover .oi{color:#c9c9c9}
+.cell:hover .ltp{color:var(--on-ink)}
+.cell:hover .oi{color:var(--on-ink-dim)}
 .ce-side{border-right:1px solid var(--line)}
 .pe-side{border-left:1px solid var(--line)}
-tr.atm .strike{background:var(--ink); color:#fff}
+tr.atm .strike{background:var(--ink); color:var(--on-ink)}
 tr.itm .ce-side{background:var(--up-bg)} tr.itm-pe .pe-side{background:var(--down-bg)}
 .empty{text-align:center; color:var(--faint); padding:60px 20px}
 
@@ -204,12 +216,12 @@ tr.itm .ce-side{background:var(--up-bg)} tr.itm-pe .pe-side{background:var(--dow
 .ticket .t-sub{font-size:11.5px; color:var(--faint); margin-bottom:12px}
 .toggle{display:flex; border:1px solid var(--line-2); border-radius:8px; overflow:hidden; margin-bottom:10px}
 .toggle button{flex:1; border:none; background:var(--bg); color:var(--sub); padding:7px; cursor:pointer; font-size:12px; font-weight:600}
-.toggle button.on{background:var(--ink); color:#fff}
+.toggle button.on{background:var(--ink); color:var(--on-ink)}
 .bs{display:flex; gap:8px; margin-bottom:10px}
 .bs button{flex:1; border:1px solid var(--ink); background:var(--bg); color:var(--ink);
   padding:9px; border-radius:8px; cursor:pointer; font-weight:700; font-size:13px}
-.bs button.buy.on{background:var(--ink); color:#fff}
-.bs button.sell.on{background:var(--ink); color:#fff}
+.bs button.buy.on{background:var(--ink); color:var(--on-ink)}
+.bs button.sell.on{background:var(--ink); color:var(--on-ink)}
 .field{display:flex; align-items:center; justify-content:space-between; margin:8px 0}
 .field label{font-size:12px; color:var(--sub)}
 .stepper{display:flex; align-items:center; gap:0; border:1px solid var(--line-2); border-radius:7px; overflow:hidden}
@@ -219,15 +231,15 @@ tr.itm .ce-side{background:var(--up-bg)} tr.itm-pe .pe-side{background:var(--dow
 .summary{background:var(--raise); border-radius:8px; padding:10px 12px; font-size:12px; margin:12px 0}
 .summary div{display:flex; justify-content:space-between; padding:2px 0}
 .summary .val{font-weight:600; font-variant-numeric:tabular-nums}
-.place{width:100%; border:none; background:var(--ink); color:#fff; padding:12px; border-radius:9px;
+.place{width:100%; border:none; background:var(--ink); color:var(--on-ink); padding:12px; border-radius:9px;
   font-size:14px; font-weight:700; cursor:pointer; letter-spacing:.02em}
 .place:hover{opacity:.88}
 .place:disabled{opacity:.4; cursor:not-allowed}
-.live-warn{font-size:11px; color:var(--ink); background:#f0f0f0; border:1px solid var(--line-2);
+.live-warn{font-size:11px; color:var(--ink); background:var(--soft); border:1px solid var(--line-2);
   border-radius:6px; padding:7px 9px; margin-top:9px}
 .msg{font-size:12px; margin-top:9px; padding:8px 10px; border-radius:6px}
-.msg.ok{background:var(--ink); color:#fff}
-.msg.err{background:#f0f0f0; border:1px solid var(--line-2)}
+.msg.ok{background:var(--ink); color:var(--on-ink)}
+.msg.err{background:var(--soft); border:1px solid var(--line-2)}
 
 /* ---------- positions ---------- */
 .pos-wrap h2{padding:16px 16px 6px}
@@ -239,10 +251,10 @@ tr.itm .ce-side{background:var(--up-bg)} tr.itm-pe .pe-side{background:var(--dow
 .pos .r1{display:flex; justify-content:space-between; align-items:center}
 .pos .p-inst{font-weight:600; font-size:12.5px}
 .pos .p-tag{font-size:9px; font-weight:700; border:1px solid var(--ink); border-radius:3px; padding:0 4px; margin-left:5px}
-.pos .p-tag.live{background:var(--ink); color:#fff}
+.pos .p-tag.live{background:var(--ink); color:var(--on-ink)}
 .pos .r2{display:flex; justify-content:space-between; align-items:center; margin-top:5px; font-size:11.5px; color:var(--sub)}
 .pos .close{border:1px solid var(--line-2); background:var(--bg); border-radius:6px; padding:4px 10px; cursor:pointer; font-size:11px; font-weight:600}
-.pos .close:hover{background:var(--ink); color:#fff}
+.pos .close:hover{background:var(--ink); color:var(--on-ink)}
 .pos-empty{color:var(--faint); font-size:12px; padding:14px 16px}
 
 .pos .pnl.up{color:var(--up); font-weight:700}
@@ -269,10 +281,10 @@ tr.itm .ce-side{background:var(--up-bg)} tr.itm-pe .pe-side{background:var(--dow
 .auth-card input{border:1px solid var(--line-2); background:var(--bg); color:var(--ink);
   padding:11px 13px; border-radius:9px; font-size:14px}
 .auth-card input:focus{outline:none; border-color:var(--ink)}
-.btn{margin-top:20px; background:var(--ink); color:#fff; border:none; padding:12px; border-radius:9px;
+.btn{margin-top:20px; background:var(--ink); color:var(--on-ink); border:none; padding:12px; border-radius:9px;
   font-size:14px; font-weight:700; cursor:pointer}
 .btn:hover{opacity:.88}
 .switch{margin-top:18px; font-size:13px; color:var(--sub); text-align:center}
 .switch a{color:var(--ink); font-weight:600; text-decoration:none}
-.error{color:var(--ink); font-size:13px; margin-top:12px; background:#f0f0f0; border:1px solid var(--line-2); padding:9px 11px; border-radius:8px}
+.error{color:var(--ink); font-size:13px; margin-top:12px; background:var(--soft); border:1px solid var(--line-2); padding:9px 11px; border-radius:8px}
 .disclaimer{margin-top:22px; font-size:11px; color:var(--faint); line-height:1.6}

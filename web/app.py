@@ -127,7 +127,7 @@ async def api_chain(symbol: str, expiry: str | None = None,
 
 @app.get("/api/levels")
 async def api_levels(symbol: str, email: str = Depends(require_user)):
-    from engine.quant_signal import compute_signal
+    from engine.alpha_signal import compute_signal
     return JSONResponse(compute_signal(symbol))
 
 

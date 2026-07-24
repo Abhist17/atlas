@@ -1,0 +1,222 @@
+"""Alpha engine — multi-timeframe confluence for higher-quality entries.
+
+This is the upgrade over a single EMA crossover. It does NOT try to predict the
+market better (short-term direction is noise); it improves entries by being
+*selective* — the way disciplined quant/discretionary traders actually filter:
+
+  1. Higher-timeframe gate (15m): the 15m trend sets the ONLY direction allowed.
+     We never take a 5m long when the 15m trend is down. This kills most bad trades.
+  2. Regime gate (ADX): crossovers/momentum only work in a trending tape. Low ADX
+     -> AVOID (chop).
+  3. 5m confluence stack: EMA 9/15 cross, MACD histogram, RSI, VWAP side, volume,
+     opening-range. Each is an independent vote in the candidate direction.
+  4. Grade + timing: count the aligned votes -> A+/A/B. ENTER only on a high-grade,
+     fresh, non-extended setup; otherwise WAIT (right idea, wrong moment) or AVOID.
+
+Output matches the dashboard signal schema, with two extra fields: `grade` and
+`confluence` (aligned votes / total). Honest note stays: selectivity, not prophecy.
+"""
+from __future__ import annotations
+
+import numpy as np
+
+from data.live_feed import get_bars
+from data.yf_client import yfc
+from engine.directional import add_opening_range
+from engine.indicators import add_indicators
+from utils.logger import get_logger
+
+log = get_logger("engine.alpha_signal")
+
+ADX_MIN = 20.0
+FRESH_BARS = 4
+EXTENDED = 1.6      # ATRs from EMA15 beyond which we don't chase
+AT_EMA = 0.5
+_ATR_STOP = 1.3
+_ATM_DELTA = 0.5
+GRADE_MIN = 4       # min aligned votes (of 6) to allow ENTER
+
+
+def compute_signal(symbol: str, interval: int = 5) -> dict:
+    symbol = symbol.upper()
+    feed = get_bars(symbol, days=5, interval=interval)
+    if not feed.get("ok"):
+        return {"symbol": symbol, "ok": False, "error": feed.get("error", "No data.")}
+    ind = add_opening_range(add_indicators(feed["bars"])).dropna(
+        subset=["ema9", "ema15", "atr", "vwap"]).reset_index(drop=True)
+    if len(ind) < 25:
+        return {"symbol": symbol, "ok": False, "error": "Not enough clean bars."}
+
+    htf_bias = _htf_bias(symbol)          # +1 up / -1 down / 0 neutral (15m)
+    last = ind.iloc[-1]
+    ltp = float(feed["ltp"])
+    atr = float(last["atr"])
+    ema9, ema15 = float(last["ema9"]), float(last["ema15"])
+    vwap = float(last["vwap"])
+    rsi = float(last["rsi"]) if not np.isnan(last["rsi"]) else 50.0
+    adx = float(last["adx"]) if not np.isnan(last.get("adx", np.nan)) else 0.0
+    macd_h = float(last.get("macd_hist", np.nan)) if not np.isnan(last.get("macd_hist", np.nan)) else 0.0
+    vol_x = float(last["volume"] / last["avg_volume"]) if last["avg_volume"] else 0.0
+
+    # candidate direction: prefer the EMA cross, tie-broken by HTF
+    diff = (ind["ema9"] - ind["ema15"]).to_numpy()
+    sign = np.sign(diff)
+    long = (sign[-1] >= 0) if sign[-1] != 0 else (htf_bias >= 0)
+    bias = "LONG" if long else "SHORT"
+    opt = "CALL" if long else "PUT"
+    bars_since, cross_dir = _bars_since_cross(sign)
+    fresh = bars_since is not None and bars_since <= FRESH_BARS
+
+    # --- confluence votes (each +1 if it confirms the candidate direction) ---
+    orh = float(last.get("or_high", np.nan))
+    orl = float(last.get("or_low", np.nan))
+    votes = _votes(long, ema9, ema15, macd_h, rsi, ltp, vwap, vol_x, orh, orl)
+    aligned = sum(1 for v in votes if v["ok"])
+    total = len(votes)
+    grade = "A+" if aligned >= 6 else "A" if aligned == 5 else "B" if aligned == 4 else "C"
+
+    htf_ok = (htf_bias > 0 and long) or (htf_bias < 0 and not long)
+    trending = adx >= ADX_MIN
+    vwap_ok = (ltp > vwap) if long else (ltp < vwap)
+    ext = ((ltp - ema15) / atr) if long else ((ema15 - ltp) / atr)
+
+    confidence = round(min(0.15 + aligned / total * 0.7 + (0.15 if htf_ok else 0), 1.0), 2)
+
+    status, headline, trigger, entry = _decide(
+        long, htf_bias, htf_ok, trending, adx, aligned, grade, fresh, bars_since,
+        cross_dir, vwap_ok, ext, ltp, ema15, vwap)
+
+    risk = _ATR_STOP * atr
+    if long:
+        stop = entry - risk
+        tps = [entry + risk, entry + 2 * risk, entry + 3 * risk]
+    else:
+        stop = entry + risk
+        tps = [entry - risk, entry - 2 * risk, entry - 3 * risk]
+
+    today = ind[ind["timestamp"].astype(str).str[:10] == str(last["timestamp"])[:10]]
+    if today.empty:
+        today = ind
+
+    def _r(v):
+        return None if v is None or (isinstance(v, float) and np.isnan(v)) else round(float(v), 2)
+
+    levels = {"EMA 9": _r(ema9), "EMA 15": _r(ema15), "VWAP": _r(vwap), "ADX": _r(adx),
+              "Day high": _r(today["high"].max()), "Day low": _r(today["low"].min())}
+    opt_move_sl = round(abs(entry - stop) * _ATM_DELTA, 2)
+    opt_move_tp = [round(abs(t - entry) * _ATM_DELTA, 2) for t in tps]
+
+    htf_txt = {1: "up", -1: "down", 0: "flat"}[htf_bias]
+    factors = [{"factor": "15m trend", "dir": htf_bias,
+                "text": f"Higher timeframe is {htf_txt} — "
+                        f"{'aligned' if htf_ok else 'NOT aligned, caution'}"}]
+    factors += [{"factor": v["name"], "dir": (1 if long else -1) if v["ok"] else 0,
+                 "text": v["text"]} for v in votes]
+    factors.append({"factor": "Regime (ADX)", "dir": 0,
+                    "text": f"ADX {adx:.0f} — {'trending' if trending else 'choppy'}"})
+
+    return {
+        "symbol": symbol, "ok": True, "ltp": round(ltp, 2),
+        "bias": bias, "option": opt, "confidence": confidence,
+        "grade": grade, "confluence": f"{aligned}/{total}",
+        "atr": round(atr, 2), "atr_pct": round(atr / ltp * 100, 2),
+        "status": status, "headline": headline, "trigger": trigger,
+        "extension": round(ext, 2),
+        "entry": round(entry, 2), "stop": round(stop, 2),
+        "risk_pts": round(abs(entry - stop), 2),
+        "risk_pct": round(abs(entry - stop) / ltp * 100, 2),
+        "targets": [{"px": round(tps[i], 2), "rr": i + 1,
+                     "pct": round((tps[i] / ltp - 1) * 100, 2), "opt_gain": opt_move_tp[i]}
+                    for i in range(3)],
+        "opt_stop_move": opt_move_sl,
+        "levels": {k: v for k, v in levels.items() if v is not None},
+        "factors": factors,
+        "live": {"is_live": feed["is_live"], "source": feed["source"]},
+        "note": f"Grade {grade} · {aligned}/{total} factors aligned · 15m-filtered · not a prediction",
+    }
+
+
+def _htf_bias(symbol: str) -> int:
+    """15-min trend bias: +1 up / -1 down / 0 neutral."""
+    try:
+        df = yfc.intraday(symbol, days=15, interval=15)
+        if df is None or len(df) < 55:
+            return 0
+        h = add_indicators(df).dropna(subset=["ema21"])
+        if h.empty:
+            return 0
+        r = h.iloc[-1]
+        # price vs 15m EMA21 with a small deadband to avoid whipsaw at the line
+        band = 0.0015 * float(r["ema21"])   # ~0.15%
+        if float(r["close"]) > float(r["ema21"]) + band:
+            return 1
+        if float(r["close"]) < float(r["ema21"]) - band:
+            return -1
+        return 0
+    except Exception as e:
+        log.debug("HTF bias failed for %s: %s", symbol, e)
+        return 0
+
+
+def _votes(long, ema9, ema15, macd_h, rsi, ltp, vwap, vol_x, orh, orl):
+    up = long
+    ema_ok = (ema9 >= ema15) if up else (ema9 < ema15)
+    macd_ok = (macd_h > 0) if up else (macd_h < 0)
+    rsi_ok = (rsi >= 52) if up else (rsi <= 48)
+    vwap_ok = (ltp > vwap) if up else (ltp < vwap)
+    vol_ok = vol_x >= 1.0
+    if not np.isnan(orh):
+        or_ok = (ltp >= orh) if up else (ltp <= orl)
+        or_txt = (f"{'Above' if up else 'Below'} opening range — "
+                  f"{'breakout' if or_ok else 'inside range'}")
+    else:
+        or_ok, or_txt = False, "Opening range not set"
+    return [
+        {"name": "EMA 9/15", "ok": ema_ok,
+         "text": f"EMA9 {'above' if ema9 >= ema15 else 'below'} EMA15"},
+        {"name": "MACD", "ok": macd_ok,
+         "text": f"MACD histogram {'positive' if macd_h > 0 else 'negative'} ({macd_h:+.2f})"},
+        {"name": "RSI", "ok": rsi_ok, "text": f"RSI {rsi:.0f}"},
+        {"name": "VWAP", "ok": vwap_ok,
+         "text": f"Price {'above' if ltp > vwap else 'below'} VWAP ({vwap:.2f})"},
+        {"name": "Volume", "ok": vol_ok, "text": f"Volume {vol_x:.1f}x average"},
+        {"name": "Opening range", "ok": or_ok, "text": or_txt},
+    ]
+
+
+def _decide(long, htf_bias, htf_ok, trending, adx, aligned, grade, fresh,
+            bars_since, cross_dir, vwap_ok, ext, ltp, ema15, vwap):
+    d = "up" if long else "down"
+
+    if not trending:
+        return ("AVOID", f"Choppy tape (ADX {adx:.0f}) — no clean trend to trade.",
+                "Wait for ADX above 20.", ltp)
+    if htf_bias == 0:
+        return ("AVOID", "15-min trend is flat — no directional edge.",
+                "Wait for the higher timeframe to pick a side.", ltp)
+    if not htf_ok:
+        return ("AVOID", f"Setup fights the 15-min trend ({'up' if htf_bias>0 else 'down'}).",
+                "Only trade with the higher timeframe. Stand aside.", ltp)
+    if aligned < GRADE_MIN:
+        return ("AVOID", f"Only {aligned}/6 factors aligned (grade {grade}) — too weak.",
+                "Wait for a higher-confluence setup.", ltp)
+    if not vwap_ok:
+        return ("WAIT", f"Grade {grade} {d} setup, but price is on the wrong side of VWAP.",
+                f"Enter once price reclaims VWAP {vwap:.2f}.", ltp)
+    if ext >= EXTENDED:
+        return ("WAIT", f"Grade {grade} but extended {ext:.1f} ATR from EMA15 — don't chase.",
+                f"Wait for a pullback toward EMA15 {ema15:.2f}.", ema15)
+    if fresh or abs(ext) <= AT_EMA:
+        why = (f"fresh EMA cross {cross_dir} {bars_since} bar(s) ago"
+               if fresh else "pullback to EMA15")
+        return ("ENTER", f"Grade {grade} {d} setup, {aligned}/6 aligned with 15m — enter now.",
+                f"High-confluence entry ({why}).", ltp)
+    return ("WAIT", f"Grade {grade} {d} setup, but no fresh trigger yet.",
+            f"Enter on the next EMA cross or a dip to EMA15 {ema15:.2f}.", ema15)
+
+
+def _bars_since_cross(sign):
+    for i in range(len(sign) - 1, 0, -1):
+        if sign[i] != sign[i - 1] and sign[i] != 0:
+            return (len(sign) - 1 - i), ("up" if sign[i] > 0 else "down")
+    return None, ("up" if sign[-1] >= 0 else "down")

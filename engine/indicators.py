@@ -21,10 +21,22 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["atr"] = ta.atr(out["high"], out["low"], out["close"], length=14)
     out["atr_pct"] = out["atr"] / out["close"] * 100
 
-    # EMAs for trend (9/15 crossover is the quant entry core; 21 kept for legacy)
+    # EMAs for trend (9/15 crossover is the entry core; 50 = slower trend anchor)
     out["ema9"] = ta.ema(out["close"], length=9)
     out["ema15"] = ta.ema(out["close"], length=15)
     out["ema21"] = ta.ema(out["close"], length=21)
+    out["ema50"] = ta.ema(out["close"], length=50)
+
+    # MACD momentum (histogram = momentum acceleration)
+    try:
+        macd = ta.macd(out["close"], fast=12, slow=26, signal=9)
+        if macd is not None:
+            out["macd"] = macd["MACD_12_26_9"]
+            out["macd_hist"] = macd["MACDh_12_26_9"]
+        else:
+            out["macd"] = out["macd_hist"] = np.nan
+    except Exception:
+        out["macd"] = out["macd_hist"] = np.nan
 
     # ADX = trend-strength / regime filter (high = trending, low = chop)
     try:

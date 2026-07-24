@@ -104,6 +104,7 @@ header{
 .sig-l{display:flex; align-items:center; gap:10px; margin-bottom:6px}
 .sig-status{font-size:15px; font-weight:800; letter-spacing:.08em}
 .signal .bias-badge{background:rgba(255,255,255,.22); color:#fff; padding:3px 9px; font-size:11px}
+.grade-badge{background:#fff; color:var(--ink); padding:3px 9px; border-radius:6px; font-size:11px; font-weight:800; letter-spacing:.03em}
 .sig-head{font-size:13.5px; font-weight:600}
 .sig-trig{font-size:12px; opacity:.92; margin-top:3px}
 

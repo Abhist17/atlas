@@ -291,7 +291,8 @@
     wrap.innerHTML=`<div class="plan ${dirCls}">
       <div class="signal ${stCls}">
         <div class="sig-l"><span class="sig-status">${p.status}</span>
-          <span class="bias-badge ${dirCls}">${p.bias} · ${p.option}</span></div>
+          <span class="bias-badge ${dirCls}">${p.bias} · ${p.option}</span>
+          ${p.grade?`<span class="grade-badge">Grade ${p.grade} · ${p.confluence}</span>`:""}</div>
         <div class="sig-head">${p.headline}</div>
         <div class="sig-trig">▸ ${p.trigger}</div>
       </div>

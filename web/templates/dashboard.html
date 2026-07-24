@@ -156,17 +156,32 @@
     document.getElementById("chainHead").style.display="none";
     document.getElementById("chainTable").style.display="none";
     document.getElementById("planWrap").innerHTML="";
+    // each loads independently so one slow/failing call can't block the others
     loadPlan(sym);
     startChart(sym);
-    const ex=await (await fetch("/api/expiries?symbol="+sym)).json();
+    loadExpiriesAndChain(sym);
+  }
+  async function loadExpiriesAndChain(sym){
     const sel=document.getElementById("expiry");
-    sel.innerHTML=ex.expiries.map(e=>`<option>${e}</option>`).join("");
-    selExpiry=ex.expiries[0];
-    sel.onchange=()=>{selExpiry=sel.value; loadChain();};
+    try{
+      const ex=await (await fetch("/api/expiries?symbol="+sym)).json();
+      if(sym!==selSym) return;
+      const list=(ex&&ex.expiries)||[];
+      sel.innerHTML=list.map(e=>`<option>${e}</option>`).join("");
+      selExpiry=list[0]||null;
+      sel.onchange=()=>{selExpiry=sel.value; loadChain();};
+    }catch(e){ selExpiry=null; }
     loadChain();
   }
   async function loadChain(){
-    chain=await (await fetch(`/api/chain?symbol=${selSym}&expiry=${encodeURIComponent(selExpiry||"")}`)).json();
+    try{
+      const res=await fetch(`/api/chain?symbol=${selSym}&expiry=${encodeURIComponent(selExpiry||"")}`);
+      chain=await res.json();
+    }catch(e){
+      document.getElementById("chainEmpty").textContent="Option chain unavailable right now.";
+      document.getElementById("chainEmpty").style.display="block";
+      return;
+    }
     renderChain();
   }
   function renderChain(){
@@ -273,7 +288,8 @@
     const wrap=document.getElementById("planWrap");
     wrap.innerHTML=`<div class="plan"><div class="plan-note">Building trade plan for ${sym}…</div></div>`;
     let p;
-    try{ p=await (await fetch("/api/levels?symbol="+sym)).json(); }catch(e){ wrap.innerHTML=""; return; }
+    try{ p=await (await fetch("/api/levels?symbol="+sym)).json(); }
+    catch(e){ wrap.innerHTML=`<div class="plan"><div class="plan-note">Signal unavailable — data feed error. Try another stock.</div></div>`; return; }
     if(sym!==selSym) return;
     if(!p.ok){ wrap.innerHTML=`<div class="plan"><div class="plan-note">Signal unavailable: ${p.error||""}</div></div>`; return; }
     plan=p; if(leg) renderProjection();

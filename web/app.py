@@ -59,30 +59,48 @@ async def login_page(request: Request):
 
 
 @app.post("/login")
-async def login(request: Request, email: str = Form(...), password: str = Form(...)):
-    if auth.authenticate(email, password):
+async def login(request: Request, email: str = Form(...)):
+    """Step 1: request an OTP for this email."""
+    email = email.strip().lower()
+    if not auth.valid_email(email):
+        return templates.TemplateResponse(request, "login.html",
+                                          {"error": "Enter a valid email address."})
+    code = auth.generate_otp(email)
+    auth.send_otp_email(email, code)   # emails it if SMTP configured, else dev mode
+    return RedirectResponse(f"/verify?email={email}", status_code=303)
+
+
+@app.get("/verify", response_class=HTMLResponse)
+async def verify_page(request: Request, email: str = ""):
+    if current_user(request):
+        return RedirectResponse("/dashboard", status_code=303)
+    if not auth.valid_email(email):
+        return RedirectResponse("/login", status_code=303)
+    return templates.TemplateResponse(request, "verify.html", {
+        "email": email, "error": None,
+        "dev_code": auth.dev_code(email),           # shown only when SMTP not set up
+        "emailed": auth.smtp_configured(),
+    })
+
+
+@app.post("/verify")
+async def verify(request: Request, email: str = Form(...), code: str = Form(...)):
+    """Step 2: check the OTP and open a session."""
+    email = email.strip().lower()
+    if auth.verify_otp(email, code):
         resp = RedirectResponse("/dashboard", status_code=303)
         resp.set_cookie(auth.COOKIE_NAME, auth.make_session(email),
                         max_age=auth.SESSION_MAX_AGE, httponly=True, samesite="lax")
         return resp
-    return templates.TemplateResponse(request, "login.html", {"error": "Invalid email or password."})
+    return templates.TemplateResponse(request, "verify.html", {
+        "email": email, "error": "Invalid or expired code. Try again.",
+        "dev_code": auth.dev_code(email), "emailed": auth.smtp_configured(),
+    })
 
 
-@app.get("/signup", response_class=HTMLResponse)
-async def signup_page(request: Request):
-    return templates.TemplateResponse(request, "signup.html", {"error": None})
-
-
-@app.post("/signup")
-async def signup(request: Request, name: str = Form(""), email: str = Form(...),
-                 password: str = Form(...)):
-    ok, msg = auth.create_user(email, password, name)
-    if not ok:
-        return templates.TemplateResponse(request, "signup.html", {"error": msg})
-    resp = RedirectResponse("/dashboard", status_code=303)
-    resp.set_cookie(auth.COOKIE_NAME, auth.make_session(email),
-                    max_age=auth.SESSION_MAX_AGE, httponly=True, samesite="lax")
-    return resp
+@app.get("/signup")
+async def signup_redirect():
+    return RedirectResponse("/login", status_code=303)
 
 
 @app.get("/logout")

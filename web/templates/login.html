@@ -16,12 +16,10 @@
       <form method="post" action="/login">
         <label for="email">Email</label>
         <input type="email" id="email" name="email" required autofocus placeholder="you@example.com">
-        <label for="password">Password</label>
-        <input type="password" id="password" name="password" required placeholder="••••••••">
         {% if error %}<div class="error">{{ error }}</div>{% endif %}
-        <button class="btn" type="submit">Sign in</button>
+        <button class="btn" type="submit">Send login code</button>
       </form>
-      <div class="switch">New here? <a href="/signup">Create an account</a></div>
+      <div class="switch">We'll email you a 6-digit code — no password needed.</div>
       <div class="disclaimer">
         Atlas is a decision-support tool for educational use. Signals do not
         predict the market and are not investment advice. Trade at your own risk.

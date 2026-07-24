@@ -9,8 +9,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
+import re
 import secrets
+import smtplib
+import time
 from datetime import datetime
+from email.message import EmailMessage
 
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
@@ -110,3 +115,85 @@ def read_session(token: str | None) -> str | None:
         return _serializer.loads(token, max_age=SESSION_MAX_AGE)
     except (BadSignature, SignatureExpired):
         return None
+
+
+# ---------------------------------------------------------------- OTP login
+OTP_TTL = 600            # 10 minutes
+OTP_MAX_ATTEMPTS = 5
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_otps: dict[str, dict] = {}   # email -> {hash, plain, expires, attempts}
+
+
+def valid_email(email: str) -> bool:
+    return bool(_EMAIL_RE.match((email or "").strip()))
+
+
+def smtp_configured() -> bool:
+    return bool(os.getenv("SMTP_HOST") and os.getenv("SMTP_USER") and os.getenv("SMTP_PASS"))
+
+
+def generate_otp(email: str) -> str:
+    """Create + store a 6-digit code for this email. Returns the code."""
+    email = email.strip().lower()
+    code = f"{random.randint(0, 999999):06d}"
+    _otps[email] = {"hash": hashlib.sha256(code.encode()).hexdigest(),
+                    "plain": code, "expires": time.time() + OTP_TTL, "attempts": 0}
+    log.info("Login OTP for %s: %s", email, code)   # printed to server console (dev)
+    return code
+
+
+def dev_code(email: str) -> str | None:
+    """The plain code, exposed only when SMTP isn't configured (local dev)."""
+    if smtp_configured():
+        return None
+    rec = _otps.get(email.strip().lower())
+    return rec["plain"] if rec and time.time() <= rec["expires"] else None
+
+
+def verify_otp(email: str, code: str) -> bool:
+    email = email.strip().lower()
+    rec = _otps.get(email)
+    if not rec or time.time() > rec["expires"] or rec["attempts"] >= OTP_MAX_ATTEMPTS:
+        _otps.pop(email, None)
+        return False
+    rec["attempts"] += 1
+    if secrets.compare_digest(rec["hash"], hashlib.sha256(code.strip().encode()).hexdigest()):
+        _otps.pop(email, None)
+        _ensure_user(email)
+        return True
+    return False
+
+
+def _ensure_user(email: str) -> dict:
+    """Passwordless: create the user record on first successful login."""
+    users = _load_users()
+    email = email.strip().lower()
+    if email not in users:
+        users[email] = {"name": email.split("@")[0], "created": datetime.now().isoformat()}
+        _save_users(users)
+        log.info("New user via OTP: %s", email)
+    return users[email]
+
+
+def send_otp_email(email: str, code: str) -> tuple[bool, str]:
+    """Email the code via SMTP if configured; otherwise dev mode (False)."""
+    if not smtp_configured():
+        return False, "dev"
+    host = os.getenv("SMTP_HOST")
+    port = int(os.getenv("SMTP_PORT", "587"))
+    user, pw = os.getenv("SMTP_USER"), os.getenv("SMTP_PASS")
+    msg = EmailMessage()
+    msg["Subject"] = "Your Atlas login code"
+    msg["From"] = os.getenv("SMTP_FROM", user)
+    msg["To"] = email
+    msg.set_content(f"Your Atlas login code is: {code}\n\nIt expires in 10 minutes.\n"
+                    f"If you didn't request this, ignore this email.")
+    try:
+        with smtplib.SMTP(host, port, timeout=15) as s:
+            s.starttls()
+            s.login(user, pw)
+            s.send_message(msg)
+        return True, "sent"
+    except Exception as e:
+        log.error("OTP email send failed: %s", e)
+        return False, str(e)

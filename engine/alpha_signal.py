@@ -19,6 +19,7 @@ Output matches the dashboard signal schema, with two extra fields: `grade` and
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 
 from data.live_feed import get_bars
 from data.market_context import get_context
@@ -37,6 +38,8 @@ AT_EMA = 0.5
 _ATR_STOP = 1.3
 _ATM_DELTA = 0.5
 GRADE_MIN = 4       # min aligned votes (of 6) to allow ENTER
+OPEN_NOISE_END = (9, 30)    # first 15 min of the session: let the auction settle
+LATE_ENTRY_CUTOFF = (15, 0)  # no fresh intraday entries in the last half hour
 
 
 def compute_signal(symbol: str, interval: int = 5) -> dict:
@@ -125,6 +128,17 @@ def compute_signal(symbol: str, interval: int = 5) -> dict:
         headline = f"{mkt['name']} is moving {'up' if mkt_dir>0 else 'down'} — against this {('long' if long else 'short')}."
         trigger = f"Wait for {mkt['name']} to turn, or stand aside."
 
+    # time-of-day gate: the opening 15 min is noise, the last half hour has no runway
+    phase, phase_txt = _session_phase(last["timestamp"])
+    if status == "ENTER" and phase == "open":
+        status = "WAIT"
+        headline = "Opening 15 minutes — let the auction settle before entering."
+        trigger = f"Re-check after {OPEN_NOISE_END[0]:02d}:{OPEN_NOISE_END[1]:02d}."
+    elif status == "ENTER" and phase == "late":
+        status = "AVOID"
+        headline = "Too late in the session for a fresh intraday entry."
+        trigger = "No new positions this close to the close."
+
     risk = _ATR_STOP * atr
     if long:
         stop = entry - risk
@@ -158,6 +172,8 @@ def compute_signal(symbol: str, interval: int = 5) -> dict:
                     "dir": mkt_dir if mkt_aligned else -1 if mkt_against else 0,
                     "text": f"{mkt['name']} {mkt_txt} ({mkt['chg']:+.2f}%) — "
                             f"{'aligned' if mkt_aligned else 'against, caution' if mkt_against else 'neutral'}"})
+    factors.append({"factor": "Time of day", "dir": 0 if phase == "core" else -1,
+                    "text": phase_txt})
     factors.append({"factor": "Relative strength",
                     "dir": (1 if long else -1) if rs_ok else (-1 if rs_bad else 0),
                     "text": f"{'Out' if rs > 0 else 'Under'}performing {mkt['name']} by {rs:+.2f}% — "
@@ -209,6 +225,24 @@ def _htf_bias(symbol: str) -> int:
     except Exception as e:
         log.debug("HTF bias failed for %s: %s", symbol, e)
         return 0
+
+
+def _session_phase(ts) -> tuple[str, str]:
+    """Where in the trading day are we? -> (phase, human text).
+
+    phase: "open" (first 15 min, auction noise), "late" (last half hour, no time
+    for the trade to work + squaring-off flow), or "core" (tradeable).
+    """
+    try:
+        t = pd.Timestamp(ts)
+        hm = (int(t.hour), int(t.minute))
+    except Exception:
+        return "core", "Session time unknown"
+    if hm < OPEN_NOISE_END:
+        return "open", f"{hm[0]:02d}:{hm[1]:02d} — opening 15 min, prices still unsettled"
+    if hm >= LATE_ENTRY_CUTOFF:
+        return "late", f"{hm[0]:02d}:{hm[1]:02d} — late session, too little time left to work"
+    return "core", f"{hm[0]:02d}:{hm[1]:02d} — core session"
 
 
 def _votes(long, ema9, ema15, macd_h, rsi, ltp, vwap, vol_x, orh, orl):

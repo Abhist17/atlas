@@ -61,6 +61,7 @@ from utils.logger import get_logger
 log = get_logger("engine.evaluate")
 
 OR_BARS = 6
+HORIZON = 12        # bars (1 hour on 5m) for the fixed-horizon R metric
 _INDEX = {"NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK"}
 # mirrors data.market_context._BANKING
 _BANKING = {
@@ -186,7 +187,9 @@ def _index_frame(days: int) -> dict[str, pd.DataFrame]:
         day = pd.to_datetime(df["timestamp"]).dt.date
         day_open = df.groupby(day)["open"].transform("first").astype(float)
         out[name] = pd.DataFrame({
-            "timestamp": pd.to_datetime(df["timestamp"]),
+            # as_unit: parquet round-trips as ms while a fresh fetch is s, and
+            # merge_asof refuses to join mismatched datetime resolutions
+            "timestamp": pd.to_datetime(df["timestamp"]).dt.as_unit("ns"),
             f"bias": bias,
             f"chg": (c / day_open - 1) * 100,
         })
@@ -224,13 +227,55 @@ def _first_touch(high, low, entry, risk, is_long, session_id) -> np.ndarray:
     return out
 
 
+def _horizon_outcome(high, low, close, entry, risk, is_long, session_id,
+                     horizon: int = HORIZON):
+    """R-multiple of the trade over a fixed forward horizon. No timeout hole.
+
+    Simulates the actual trade for `horizon` bars: stop first -> -1R, target
+    first -> +1R, neither -> mark to market at the horizon bar. Every bar
+    therefore gets a number, which is what first-touch labelling cannot do.
+
+    Also returns an `evaluable` mask: bars with a full horizon left in the
+    session. Restricting to those makes time-of-day buckets comparable —
+    otherwise late bars are penalised simply for running out of clock.
+    """
+    n_all = len(entry)
+    r = np.full(n_all, np.nan)
+    ok = np.zeros(n_all, bool)
+    for _, idx in pd.Series(np.arange(n_all)).groupby(session_id):
+        i = idx.to_numpy()
+        n = len(i)
+        if n < 2:
+            continue
+        h, l, c = high[i], low[i], close[i]
+        e, rk, lg = entry[i], risk[i], is_long[i]
+        ar = np.arange(n)
+        tgt = np.where(lg, e + rk, e - rk)[:, None]
+        stp = np.where(lg, e - rk, e + rk)[:, None]
+        window = (ar[None, :] > ar[:, None]) & (ar[None, :] <= (ar + horizon)[:, None])
+        lgc = lg[:, None]
+        hit_t = np.where(lgc, h[None, :] >= tgt, l[None, :] <= tgt) & window
+        hit_s = np.where(lgc, l[None, :] <= stp, h[None, :] >= stp) & window
+        big = n + 1
+        ft = np.where(hit_t.any(1), hit_t.argmax(1), big)
+        fs = np.where(hit_s.any(1), hit_s.argmax(1), big)
+        end = np.minimum(ar + horizon, n - 1)
+        d = np.where(lg, 1.0, -1.0)
+        out = d * (c[end] - e) / np.maximum(rk, 1e-9)      # mark to market
+        out = np.where((ft < big) & (ft < fs), 1.0, out)   # target first
+        out = np.where((fs < big) & (fs <= ft), -1.0, out)  # stop first (ties -> loss)
+        r[i] = out
+        ok[i] = (ar + horizon) <= (n - 1)
+    return r, ok
+
+
 # ------------------------------------------------------------------ replay
 def replay_symbol(symbol: str, df: pd.DataFrame, idx: dict) -> pd.DataFrame | None:
     """One symbol -> a frame of per-bar decisions, gates and outcomes."""
     if df is None or len(df) < 120:
         return None
     ind = add_indicators(df.reset_index(drop=True))
-    ts = pd.to_datetime(ind["timestamp"])
+    ts = pd.to_datetime(ind["timestamp"]).dt.as_unit("ns")
     day = ts.dt.date
     ind = ind.assign(_day=day)
 
@@ -318,13 +363,18 @@ def replay_symbol(symbol: str, df: pd.DataFrame, idx: dict) -> pd.DataFrame | No
     grade = np.select([aligned >= 6, aligned == 5, aligned == 4],
                       ["A+", "A", "B"], default="C")
 
-    outcome = _first_touch(ind["high"].to_numpy(float), ind["low"].to_numpy(float),
-                           close, _ATR_STOP * atr, is_long, day.to_numpy())
+    high = ind["high"].to_numpy(float)
+    low = ind["low"].to_numpy(float)
+    risk = _ATR_STOP * atr
+    outcome = _first_touch(high, low, close, risk, is_long, day.to_numpy())
+    r_h, evaluable = _horizon_outcome(high, low, close, close, risk, is_long,
+                                      day.to_numpy())
 
     res = pd.DataFrame({
         "symbol": symbol, "timestamp": ts, "session": day.astype(str),
         "status": status, "grade": grade, "aligned": aligned,
         "is_long": is_long, "outcome": outcome,
+        "r_h": r_h, "evaluable": evaluable,
         "trending": trending, "htf_ok": htf_ok, "htf": htf,
         "vwap_ok": vwap_ok, "ext": ext, "fresh": fresh,
         "mkt_against": mkt_against, "mkt_aligned": mkt_aligned,
@@ -344,10 +394,17 @@ def _wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     return (max(0.0, c - h), min(1.0, c + h))
 
 
-def _clustered(df: pd.DataFrame, base: float) -> tuple[float, float, int]:
-    """Per-session hit rate: mean, t-stat vs `base`, number of sessions."""
-    per = df.groupby("session")["win"].mean()
-    per = per[df.groupby("session").size() >= 5]
+def _clustered(df: pd.DataFrame, col: str, base: float) -> tuple[float, float, int]:
+    """Per-session mean of `col`: mean, t-stat vs `base`, number of sessions.
+
+    One trading session = one observation. Bars inside a session overlap
+    heavily, so this is the only standard error worth quoting.
+    """
+    sub = df[["session", col]].dropna()
+    if sub.empty:
+        return (0.0, 0.0, 0)
+    sizes = sub.groupby("session").size()
+    per = sub.groupby("session")[col].mean()[sizes >= 5]
     k = len(per)
     if k < 3:
         return (float(per.mean()) if k else 0.0, 0.0, k)
@@ -356,22 +413,53 @@ def _clustered(df: pd.DataFrame, base: float) -> tuple[float, float, int]:
     return (float(per.mean()), float(t), k)
 
 
-def _bucket(df: pd.DataFrame, base: float) -> dict:
+def _bucket(df: pd.DataFrame, base: float, base_r: float) -> dict:
     n = len(df)
     if n == 0:
         return {"n": 0}
     wins = int(df["win"].sum())
     lo, hi = _wilson(wins, n)
-    mean, t, k = _clustered(df, base)
+    _, t, k = _clustered(df, "win", base)
     res = df["outcome"].value_counts()
+
+    # fixed-horizon R, on bars that actually have a full horizon left
+    ev = df[df["evaluable"]]
+    r_mean = float(ev["r_h"].mean()) if len(ev) else 0.0
+    _, t_r, k_r = _clustered(ev, "r_h", base_r)
     return {
         "n": n, "hit": wins / n, "ci": [lo, hi],
         "timeout_pct": float((df["outcome"] == -1).mean()),
         "excl_timeout": float((res.get(1, 0) / (res.get(1, 0) + res.get(0, 0)))
                               if (res.get(1, 0) + res.get(0, 0)) else 0.0),
         "expectancy_R": 2 * (wins / n) - 1,
-        "session_hit": mean, "t_stat": t, "sessions": k,
+        "t_stat": t, "sessions": k,
         "edge_pp": (wins / n - base) * 100,
+        "n_eval": len(ev), "r_h": r_mean, "r_edge": r_mean - base_r,
+        "t_r": t_r, "sessions_r": k_r,
+    }
+
+
+def _gate_masks(d: pd.DataFrame) -> dict[str, pd.Series]:
+    """Each entry = the engine with exactly one gate removed (or one kept)."""
+    core = (d["vwap_ok"] & (d["ext"] < EXTENDED)
+            & (d["fresh"] | (d["ext"].abs() <= AT_EMA)))
+    adx = d["trending"]
+    htf = (d["htf"] != 0) & d["htf_ok"]
+    conf = d["aligned"] >= GRADE_MIN
+    mkt = ~d["mkt_against"]
+    tod = d["phase"] == "core"
+    return {
+        "full engine": adx & htf & conf & core & mkt & tod,
+        "-ADX regime": htf & conf & core & mkt & tod,
+        "-15m gate": adx & conf & core & mkt & tod,
+        "-confluence min": adx & htf & core & mkt & tod,
+        "-market gate": adx & htf & conf & core & tod,
+        "-time gate": adx & htf & conf & core & mkt,
+        "-timing (vwap/ext/fresh)": adx & htf & conf & mkt & tod,
+        "ONLY confluence>=4": conf,
+        "ONLY 15m aligned": htf,
+        "ONLY ADX>=20": adx,
+        "everything (no gates)": pd.Series(True, index=d.index),
     }
 
 
@@ -379,11 +467,17 @@ def _bucket(df: pd.DataFrame, base: float) -> dict:
 def _fmt(label: str, b: dict, base: float) -> str:
     if not b.get("n"):
         return f"  {label:<22} —"
-    return (f"  {label:<24} n={b['n']:>7,}  hit {b['hit']*100:5.1f}%  "
-            f"[{b['ci'][0]*100:4.1f}–{b['ci'][1]*100:4.1f}]  "
-            f"{b['edge_pp']:+5.2f}pp  E {b['expectancy_R']:+5.2f}R  "
-            f"t={b['t_stat']:+5.2f}({b['sessions']:>2}s)  "
-            f"unres {b['timeout_pct']*100:4.1f}%  resolved {b['excl_timeout']*100:5.1f}%")
+    return (f"  {label:<24} n={b['n']:>7,}  hit {b['hit']*100:5.1f}% "
+            f"({b['edge_pp']:+5.2f}pp) t={b['t_stat']:+5.2f}  │  "
+            f"R{b['r_h']:+6.3f} ({b['r_edge']:+6.3f}) t={b['t_r']:+5.2f}  "
+            f"n={b['n_eval']:>7,}  unres {b['timeout_pct']*100:4.1f}%")
+
+
+def _table(title: str, rows: dict, base: float) -> list[str]:
+    L = [title]
+    for k, v in rows.items():
+        L.append(_fmt(k, v, base))
+    return L
 
 
 def evaluate(symbols: list[str], days: int) -> dict:
@@ -407,6 +501,7 @@ def evaluate(symbols: list[str], days: int) -> dict:
     all_df["win"] = (all_df["outcome"] == 1).astype(int)
 
     base = float(all_df["win"].mean())
+    base_r = float(all_df.loc[all_df["evaluable"], "r_h"].mean())
     out: dict = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "symbols": all_df["symbol"].nunique(),
@@ -414,103 +509,116 @@ def evaluate(symbols: list[str], days: int) -> dict:
         "from": str(all_df["timestamp"].min())[:16],
         "to": str(all_df["timestamp"].max())[:16],
         "bars": len(all_df),
-        "base_rate": base,
-        "by_status": {}, "by_grade": {}, "ablation": {}, "by_phase": {},
+        "horizon_bars": HORIZON,
+        "base_rate": base, "base_r": base_r,
+        "by_status": {}, "by_grade": {}, "by_phase": {},
+        "ablation": {}, "ablation_long": {}, "ablation_short": {},
     }
+
+    def B(d):
+        return _bucket(d, base, base_r)
 
     for st in ["ENTER", "WAIT", "AVOID"]:
-        out["by_status"][st] = _bucket(all_df[all_df["status"] == st], base)
+        out["by_status"][st] = B(all_df[all_df["status"] == st])
     ent = all_df[all_df["status"] == "ENTER"]
     for g in ["A+", "A", "B"]:
-        out["by_grade"][g] = _bucket(ent[ent["grade"] == g], base)
+        out["by_grade"][g] = B(ent[ent["grade"] == g])
     for ph in ["open", "core", "late"]:
-        out["by_phase"][ph] = _bucket(all_df[all_df["phase"] == ph], base)
+        out["by_phase"][ph] = B(all_df[all_df["phase"] == ph])
 
     # --- ablation: which gate is actually carrying the signal? -----------
-    core = (all_df["vwap_ok"] & (all_df["ext"] < EXTENDED)
-            & (all_df["fresh"] | (all_df["ext"].abs() <= AT_EMA)))
-    gates = {
-        "full engine": (all_df["trending"] & (all_df["htf"] != 0) & all_df["htf_ok"]
-                        & (all_df["aligned"] >= GRADE_MIN) & core
-                        & ~all_df["mkt_against"] & (all_df["phase"] == "core")),
-        "-ADX regime": ((all_df["htf"] != 0) & all_df["htf_ok"]
-                        & (all_df["aligned"] >= GRADE_MIN) & core
-                        & ~all_df["mkt_against"] & (all_df["phase"] == "core")),
-        "-15m gate": (all_df["trending"] & (all_df["aligned"] >= GRADE_MIN) & core
-                      & ~all_df["mkt_against"] & (all_df["phase"] == "core")),
-        "-confluence min": (all_df["trending"] & (all_df["htf"] != 0) & all_df["htf_ok"]
-                            & core & ~all_df["mkt_against"] & (all_df["phase"] == "core")),
-        "-market gate": (all_df["trending"] & (all_df["htf"] != 0) & all_df["htf_ok"]
-                         & (all_df["aligned"] >= GRADE_MIN) & core
-                         & (all_df["phase"] == "core")),
-        "-time gate": (all_df["trending"] & (all_df["htf"] != 0) & all_df["htf_ok"]
-                       & (all_df["aligned"] >= GRADE_MIN) & core & ~all_df["mkt_against"]),
-        "-timing (vwap/ext/fresh)": (all_df["trending"] & (all_df["htf"] != 0)
-                                     & all_df["htf_ok"] & (all_df["aligned"] >= GRADE_MIN)
-                                     & ~all_df["mkt_against"] & (all_df["phase"] == "core")),
-        "ONLY confluence>=4": (all_df["aligned"] >= GRADE_MIN),
-        "ONLY 15m aligned": ((all_df["htf"] != 0) & all_df["htf_ok"]),
-        "ONLY ADX>=20": all_df["trending"],
-    }
-    for k, mask in gates.items():
-        out["ablation"][k] = _bucket(all_df[mask], base)
+    masks = _gate_masks(all_df)
+    # Within-direction baselines: "do the gates beat shorting everything?" is a
+    # different question from "do they beat the overall base rate", and only the
+    # first one tells you whether the gates are doing work.
+    lg, sh_m = all_df["is_long"], ~all_df["is_long"]
+    b_long = float(all_df.loc[lg, "win"].mean())
+    b_short = float(all_df.loc[sh_m, "win"].mean())
+    br_long = float(all_df.loc[lg & all_df["evaluable"], "r_h"].mean())
+    br_short = float(all_df.loc[sh_m & all_df["evaluable"], "r_h"].mean())
+    out["base_long"], out["base_short"] = b_long, b_short
+    out["base_r_long"], out["base_r_short"] = br_long, br_short
+    for k, m in masks.items():
+        out["ablation"][k] = B(all_df[m])
+        out["ablation_long"][k] = _bucket(all_df[m & lg], b_long, br_long)
+        out["ablation_short"][k] = _bucket(all_df[m & sh_m], b_short, br_short)
 
     out["direction_split"] = {
-        "long": _bucket(ent[ent["is_long"]], base),
-        "short": _bucket(ent[~ent["is_long"]], base),
+        "ENTER long": B(ent[ent["is_long"]]),
+        "ENTER short": B(ent[~ent["is_long"]]),
+        "all bars long": B(all_df[all_df["is_long"]]),
+        "all bars short": B(all_df[~all_df["is_long"]]),
+    }
+    # is the short result a few outlier sessions, or broad?
+    sh = ent[~ent["is_long"] & ent["evaluable"]]
+    per = sh.groupby("session")["r_h"].mean()
+    out["short_session_spread"] = {
+        "sessions": int(len(per)),
+        "positive_sessions": int((per > 0).sum()),
+        "median": float(per.median()) if len(per) else 0.0,
+        "best": float(per.max()) if len(per) else 0.0,
+        "worst": float(per.min()) if len(per) else 0.0,
+        "mean_ex_best3": float(per.sort_values()[:-3].mean()) if len(per) > 3 else 0.0,
     }
     return out
 
 
 def render(r: dict) -> str:
-    base = r["base_rate"]
-    L = []
-    L.append("=" * 96)
-    L.append("ATLAS SIGNAL EVALUATION — does the selectivity beat the base rate?")
-    L.append("=" * 96)
-    L.append(f"{r['symbols']} symbols · {r['sessions']} sessions · "
-             f"{r['from']} → {r['to']} · {r['bars']:,} decision bars")
-    L.append(f"Risk {_ATR_STOP} ATR · label = +1R before −1R, same session · "
-             f"timeout counts as a loss · closed bars only, no lookahead")
+    base, base_r = r["base_rate"], r["base_r"]
+    W = 118
+    L = ["=" * W,
+         "ATLAS SIGNAL EVALUATION — does the selectivity beat the base rate?",
+         "=" * W,
+         f"{r['symbols']} symbols · {r['sessions']} sessions · "
+         f"{r['from']} → {r['to']} · {r['bars']:,} decision bars",
+         f"Risk {_ATR_STOP} ATR · closed bars only, no lookahead",
+         "",
+         "Two independent metrics, because each has a blind spot:",
+         f"  hit = +1R before −1R within the session (unresolved counts as a loss)"
+         f"   → base {base*100:.2f}%",
+         f"  R   = mean R-multiple over a fixed {r['horizon_bars']}-bar horizon, "
+         f"only on bars with a full horizon left"
+         f"   → base {base_r:+.4f}R",
+         "The R metric is the honest one for time-of-day questions: it cannot",
+         "penalise a bar for merely running out of clock.",
+         ""]
+    hdr = (" " * 26 + "n          hit    (edge)   t     │      R      (edge)    t"
+           "      n(eval)   unresolved")
+    L.append(hdr)
+    L += _table("BY STATUS", r["by_status"], base)
     L.append("")
-    L.append(f"BASE RATE (every bar, direction = EMA9 vs EMA15): {base*100:.2f}%")
-    L.append("  A coin-flip engine scores this. Everything below must beat it.")
+    L += _table("ENTER BY GRADE", r["by_grade"], base)
     L.append("")
-    hdr = ("n         hit     [95% CI]     edge    expect   clustered-t   "
-           "unresolved  hit-if-resolved")
-    L.append("BY STATUS" + " " * 16 + hdr)
-    for k, v in r["by_status"].items():
-        L.append(_fmt(k, v, base))
+    L += _table("BY DIRECTION", r["direction_split"], base)
     L.append("")
-    L.append("ENTER BY GRADE")
-    for k, v in r["by_grade"].items():
-        L.append(_fmt(k, v, base))
+    L += _table("BY SESSION PHASE (all bars)", r["by_phase"], base)
     L.append("")
-    L.append("ENTER BY DIRECTION")
-    for k, v in r["direction_split"].items():
-        L.append(_fmt(k, v, base))
+    L += _table("GATE ABLATION — remove one gate; does quality fall?", r["ablation"], base)
     L.append("")
-    L.append("BY SESSION PHASE (all bars)")
-    for k, v in r["by_phase"].items():
-        L.append(_fmt(k, v, base))
+    L += _table(f"GATE ABLATION — LONG ONLY (vs long base {r['base_long']*100:.2f}% / "
+                f"{r['base_r_long']:+.4f}R)", r["ablation_long"], base)
     L.append("")
-    L.append("GATE ABLATION — remove one gate at a time; does the hit rate fall?")
-    for k, v in r["ablation"].items():
-        L.append(_fmt(k, v, base))
+    L += _table(f"GATE ABLATION — SHORT ONLY (vs short base {r['base_short']*100:.2f}% / "
+                f"{r['base_r_short']:+.4f}R)", r["ablation_short"], base)
+    L.append("")
+    s = r["short_session_spread"]
+    L.append("IS THE SHORT RESULT BROAD OR A FEW OUTLIER DAYS?")
+    L.append(f"  ENTER-short sessions: {s['sessions']}  ·  positive: "
+             f"{s['positive_sessions']} ({s['positive_sessions']/max(s['sessions'],1)*100:.0f}%)"
+             f"  ·  median {s['median']:+.3f}R")
+    L.append(f"  best session {s['best']:+.3f}R  ·  worst {s['worst']:+.3f}R  ·  "
+             f"mean excluding the 3 best sessions: {s['mean_ex_best3']:+.3f}R")
     L.append("")
     L.append("HOW TO READ THIS")
-    L.append("  · 'hit' is the raw rate; the 95% interval assumes independent bars,")
-    L.append("    which they are NOT — overlapping windows make it far too narrow.")
-    L.append("  · 't' clusters by session (one trading day = one observation).")
-    L.append("    |t| < 2 means the edge is indistinguishable from noise.")
-    L.append("  · 'unresolved' = neither +1R nor −1R was touched before the close;")
-    L.append("    these count as losses in 'hit'. Late-session bars are mechanically")
-    L.append("    unresolved (no time left), so compare them on 'hit-if-resolved' —")
-    L.append("    a low 'hit' late in the day is mostly this artifact, not an edge.")
-    L.append("  · expectancy is in R, at a 1:1 target/stop: E = 2·hit − 1.")
-    L.append("    It ignores brokerage, slippage, option spread and theta — all of")
-    L.append("    which are negative. A positive E here is necessary, not sufficient.")
-    L.append("=" * 96)
+    L.append("  · 't' clusters by session (one trading day = one observation), which")
+    L.append("    is the only honest standard error here — bars overlap heavily, so")
+    L.append("    raw n and its confidence interval are far too optimistic.")
+    L.append("    |t| < 2 means indistinguishable from noise.")
+    L.append("  · 'unresolved' matters only for the hit column; the R column excludes")
+    L.append("    bars without a full horizon, so it is immune to that artifact.")
+    L.append("  · Both metrics ignore brokerage, slippage, option spread and theta —")
+    L.append("    all negative. A positive number here is necessary, not sufficient.")
+    L.append("=" * W)
     return "\n".join(L)
 
 

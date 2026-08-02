@@ -369,12 +369,20 @@ def replay_symbol(symbol: str, df: pd.DataFrame, idx: dict) -> pd.DataFrame | No
     outcome = _first_touch(high, low, close, risk, is_long, day.to_numpy())
     r_h, evaluable = _horizon_outcome(high, low, close, close, risk, is_long,
                                       day.to_numpy())
+    # Same bar scored BOTH ways, regardless of the direction the engine picked.
+    # Direction and regime are otherwise the same variable (is_long is defined
+    # by ema9 vs ema15), so they cannot be told apart in the main table: a short
+    # bias in the sample looks identical to momentum failing in uptrends.
+    yes = np.ones(len(close), bool)
+    r_long, _ = _horizon_outcome(high, low, close, close, risk, yes, day.to_numpy())
+    r_short, _ = _horizon_outcome(high, low, close, close, risk, ~yes, day.to_numpy())
 
     res = pd.DataFrame({
         "symbol": symbol, "timestamp": ts, "session": day.astype(str),
         "status": status, "grade": grade, "aligned": aligned,
         "is_long": is_long, "outcome": outcome,
         "r_h": r_h, "evaluable": evaluable,
+        "r_long": r_long, "r_short": r_short,
         "trending": trending, "htf_ok": htf_ok, "htf": htf,
         "vwap_ok": vwap_ok, "ext": ext, "fresh": fresh,
         "mkt_against": mkt_against, "mkt_aligned": mkt_aligned,
@@ -549,6 +557,20 @@ def evaluate(symbols: list[str], days: int) -> dict:
         "all bars long": B(all_df[all_df["is_long"]]),
         "all bars short": B(all_df[~all_df["is_long"]]),
     }
+    # --- regime x direction: structure, or just a short-biased sample? ------
+    ev = all_df[all_df["evaluable"]]
+    matrix = {}
+    for reg, sub in (("uptrend (ema9>=ema15)", ev[ev["is_long"]]),
+                     ("downtrend (ema9<ema15)", ev[~ev["is_long"]])):
+        row = {"n": len(sub)}
+        for side in ("r_long", "r_short"):
+            _, t, k = _clustered(sub, side, 0.0)
+            row[side] = float(sub[side].mean()) if len(sub) else 0.0
+            row[f"t_{side}"] = t
+            row[f"sessions_{side}"] = k
+        matrix[reg] = row
+    out["regime_matrix"] = matrix
+
     # is the short result a few outlier sessions, or broad?
     sh = ent[~ent["is_long"] & ent["evaluable"]]
     per = sh.groupby("session")["r_h"].mean()
@@ -600,6 +622,16 @@ def render(r: dict) -> str:
     L.append("")
     L += _table(f"GATE ABLATION — SHORT ONLY (vs short base {r['base_short']*100:.2f}% / "
                 f"{r['base_r_short']:+.4f}R)", r["ablation_short"], base)
+    L.append("")
+    L.append("REGIME × DIRECTION — every bar scored BOTH ways (mean R, "
+             "clustered t vs zero)")
+    L.append(" " * 26 + "go LONG                 go SHORT")
+    for reg, v in r["regime_matrix"].items():
+        L.append(f"  {reg:<24} R{v['r_long']:+.4f} t={v['t_r_long']:+5.2f}   "
+                 f"R{v['r_short']:+.4f} t={v['t_r_short']:+5.2f}   n={v['n']:,}")
+    L.append("  If shorting wins in BOTH rows, the engine has no momentum/reversion")
+    L.append("  structure to exploit — the sample simply favoured shorts, and that")
+    L.append("  will not survive into a different market.")
     L.append("")
     s = r["short_session_spread"]
     L.append("IS THE SHORT RESULT BROAD OR A FEW OUTLIER DAYS?")

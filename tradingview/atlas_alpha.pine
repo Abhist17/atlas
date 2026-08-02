@@ -1,0 +1,299 @@
+//@version=6
+// Atlas Alpha — entry-timing engine, ported from engine/alpha_signal.py
+//
+// Same logic as the Atlas web app, so TradingView and the app agree:
+//   1. 15m higher-timeframe gate — only trade WITH the 15m trend (0.15% deadband).
+//   2. Regime gate — ADX(14) below 20 is chop, stand aside.
+//   3. Six-factor 5m confluence stack (EMA 9/15, MACD hist, RSI, VWAP, volume,
+//      opening range) -> aligned votes -> grade A+ / A / B / C.
+//   4. Market gate — never enter against NIFTY/BANKNIFTY; relative strength shown.
+//   5. Time-of-day gate — no entries in the opening 15 min or after 15:00.
+//   6. Win probability from the logistic model trained offline
+//      (engine/prob_model.py, 61,215 samples). Coefficients are inlined below.
+//
+// Honest framing, unchanged: this is selectivity, not prediction. The win-prob
+// model's training accuracy is ~0.52 against a 0.49 base rate — a thin edge.
+//
+// Intended chart timeframe: 5 minutes, NSE equities.
+
+indicator("Atlas Alpha — Entry Timing", "Atlas Alpha", overlay = true,
+     max_lines_count = 500, max_labels_count = 500)
+
+// ─────────────────────────────────────────────────────────────── inputs
+grpC = "Core"
+htfTf      = input.timeframe("15", "Higher timeframe",            group = grpC)
+adxMin     = input.float(20.0,  "Min ADX (regime)",               group = grpC)
+gradeMin   = input.int(4,       "Min aligned votes to ENTER", 1, 6, group = grpC)
+extended   = input.float(1.6,   "Max extension from EMA15 (ATR)", group = grpC)
+atEma      = input.float(0.5,   "At-value band (ATR)",            group = grpC)
+freshBars  = input.int(4,       "Cross is 'fresh' within N bars", group = grpC)
+atrStop    = input.float(1.3,   "Stop distance (ATR)",            group = grpC)
+orBars     = input.int(6,       "Opening-range bars",             group = grpC)
+
+grpM = "Market context"
+idxSym     = input.symbol("NSE:NIFTY", "Index (use BANKNIFTY for financials)", group = grpM)
+useMktGate = input.bool(true,   "Block entries against the index", group = grpM)
+
+grpT = "Time of day"
+useTimeGate = input.bool(true,  "Time-of-day gate",               group = grpT)
+openEnd    = input.int(570,     "Opening noise ends (min from midnight)", group = grpT)
+lateStart  = input.int(900,     "No new entries after (min from midnight)", group = grpT)
+
+grpV = "Display"
+showLevels = input.bool(true,   "Plot entry / stop / targets",    group = grpV)
+showPanel  = input.bool(true,   "Show panel",                     group = grpV)
+showMarks  = input.bool(true,   "Mark ENTER bars",                group = grpV)
+
+// ─────────────────────────────────────────────────────── indicators (5m)
+ema9   = ta.ema(close, 9)
+ema15  = ta.ema(close, 15)
+ema50  = ta.ema(close, 50)
+rsi    = ta.rsi(close, 14)
+atr    = ta.atr(14)
+vwap   = ta.vwap
+[macdLine, macdSig, macdHist] = ta.macd(close, 12, 26, 9)
+[_dip, _dim, adx] = ta.dmi(14, 14)
+volX   = ta.sma(volume, 20) > 0 ? volume / ta.sma(volume, 20) : 0.0
+
+// opening range: high/low of the first `orBars` bars of each session
+newDay = ta.change(time("D")) != 0
+var int barIdx = 0
+var float orH = na
+var float orL = na
+var float dayOpen = na
+if newDay
+    barIdx  := 0
+    orH     := high
+    orL     := low
+    dayOpen := open
+else
+    barIdx += 1
+    if barIdx < orBars
+        orH := math.max(orH, high)
+        orL := math.min(orL, low)
+
+// ────────────────────────────────────────────────── higher-timeframe gate
+htfClose = request.security(syminfo.tickerid, htfTf, close, barmerge.gaps_off, barmerge.lookahead_off)
+htfEma21 = request.security(syminfo.tickerid, htfTf, ta.ema(close, 21), barmerge.gaps_off, barmerge.lookahead_off)
+htfBand  = 0.0015 * htfEma21                       // ~0.15% deadband
+htfBias  = htfClose > htfEma21 + htfBand ?  1 : htfClose < htfEma21 - htfBand ? -1 : 0
+
+// ───────────────────────────────────────────────────────── market context
+idxClose = request.security(idxSym, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+idxE9    = request.security(idxSym, timeframe.period, ta.ema(close, 9),  barmerge.gaps_off, barmerge.lookahead_off)
+idxE21   = request.security(idxSym, timeframe.period, ta.ema(close, 21), barmerge.gaps_off, barmerge.lookahead_off)
+// the session open is fixed once the session starts, so lookahead here is safe
+idxOpen  = request.security(idxSym, "D", open, barmerge.gaps_off, barmerge.lookahead_on)
+
+mktBias = idxClose > idxE21 and idxE9 >= idxE21 ?  1 :
+          idxClose < idxE21 and idxE9 <= idxE21 ? -1 : 0
+mktChg  = idxOpen > 0 ? (idxClose / idxOpen - 1) * 100 : 0.0
+
+// ───────────────────────────────────── candidate direction + confluence
+isLong = ema9 == ema15 ? htfBias >= 0 : ema9 > ema15
+dirSgn = isLong ? 1 : -1
+
+emaOk  = isLong ? ema9 >= ema15 : ema9 < ema15
+macdOk = isLong ? macdHist > 0  : macdHist < 0
+rsiOk  = isLong ? rsi >= 52     : rsi <= 48
+vwapOk = isLong ? close > vwap  : close < vwap
+volOk  = volX >= 1.0
+orOk   = na(orH) ? false : isLong ? close >= orH : close <= orL
+
+aligned = (emaOk ? 1 : 0) + (macdOk ? 1 : 0) + (rsiOk ? 1 : 0) +
+          (vwapOk ? 1 : 0) + (volOk ? 1 : 0) + (orOk ? 1 : 0)
+grade   = aligned >= 6 ? "A+" : aligned == 5 ? "A" : aligned == 4 ? "B" : "C"
+
+htfOk    = (htfBias > 0 and isLong) or (htfBias < 0 and not isLong)
+trending = adx >= adxMin
+ext      = atr > 0 ? (isLong ? (close - ema15) / atr : (ema15 - close) / atr) : 0.0
+
+// bars since the last EMA 9/15 cross
+var int barsSinceCross = na
+crossed = ta.cross(ema9, ema15)
+barsSinceCross := crossed ? 0 : na(barsSinceCross) ? na : barsSinceCross + 1
+fresh = not na(barsSinceCross) and barsSinceCross <= freshBars
+
+// relative strength vs the index (intraday excess return)
+stockChg = not na(dayOpen) and dayOpen > 0 ? (close / dayOpen - 1) * 100 : 0.0
+rs       = stockChg - mktChg
+rsOk     = isLong ? rs >  0.15 : rs < -0.15
+rsBad    = isLong ? rs < -0.15 : rs >  0.15
+
+mktAligned = mktBias != 0 and (mktBias > 0) == isLong
+mktAgainst = mktBias != 0 and (mktBias > 0) != isLong
+
+// ───────────────────────────────────────── win probability (trained model)
+// Logistic regression from data_store/prob_model.json — direction-relative
+// features, standardised, then sigmoid. Retrain: python -m engine.prob_model
+f_winProb() =>
+    d = ema9 >= ema15 ? 1.0 : -1.0
+    a = math.max(atr, 1e-6)
+    x = array.from(
+         math.abs(ema9 - ema15) / a,          // trend separation
+         d * nz(macdHist) / a,                // macd agreement
+         d * (rsi - 50.0) / 10.0,             // momentum agreement
+         d * (close - vwap) / a,              // vwap side
+         adx / 25.0,                          // regime strength
+         math.min(volX, 3.0),                 // volume
+         d * (close - ema15) / a,             // extension in direction
+         d * (close - ema50) / a)             // longer-trend agreement
+    mean = array.from(0.3337608204, 0.1036576762, 0.9516959092, 1.3478371965,
+                      1.0660430519, 0.9685033950, 0.8075328497, 1.7681547815)
+    sd = array.from(0.2715456791, 0.2205754220, 0.8305283843, 1.7334544434,
+                    0.4484618014, 0.7068682064, 0.9346320065, 1.7637152933)
+    w = array.from(0.0728204916, -0.0564241119, -0.0135182624, 0.0624644205,
+                   0.0446452358, -0.0366613557, 0.0674391383, -0.1875254230)
+    z = -0.0348021282
+    for i = 0 to 7
+        z += array.get(w, i) * (array.get(x, i) - array.get(mean, i)) / array.get(sd, i)
+    1.0 / (1.0 + math.exp(-math.max(math.min(z, 30), -30)))
+
+winProb    = f_winProb()
+confidence = math.min(math.max(winProb
+     + (mktAligned ? 0.05 : mktAgainst ? -0.05 : 0.0)
+     + (rsOk ? 0.03 : rsBad ? -0.03 : 0.0), 0.0), 1.0)
+
+// ─────────────────────────────────────────────────────────────── decision
+dTxt = isLong ? "up" : "down"
+status   = "AVOID"
+headline = ""
+trigger  = ""
+entry    = close
+
+if not trending
+    status   := "AVOID"
+    headline := "Choppy tape (ADX " + str.tostring(adx, "#") + ") — no clean trend to trade."
+    trigger  := "Wait for ADX above " + str.tostring(adxMin, "#")+ "."
+else if htfBias == 0
+    status   := "AVOID"
+    headline := "15-min trend is flat — no directional edge."
+    trigger  := "Wait for the higher timeframe to pick a side."
+else if not htfOk
+    status   := "AVOID"
+    headline := "Setup fights the 15-min trend (" + (htfBias > 0 ? "up" : "down") + ")."
+    trigger  := "Only trade with the higher timeframe. Stand aside."
+else if aligned < gradeMin
+    status   := "AVOID"
+    headline := "Only " + str.tostring(aligned) + "/6 factors aligned (grade " + grade + ") — too weak."
+    trigger  := "Wait for a higher-confluence setup."
+else if not vwapOk
+    status   := "WAIT"
+    headline := "Grade " + grade + " " + dTxt + " setup, but price is on the wrong side of VWAP."
+    trigger  := "Enter once price reclaims VWAP " + str.tostring(vwap, format.mintick) + "."
+else if ext >= extended
+    status   := "WAIT"
+    headline := "Grade " + grade + " but extended " + str.tostring(ext, "#.#") + " ATR from EMA15 — don't chase."
+    trigger  := "Wait for a pullback toward EMA15 " + str.tostring(ema15, format.mintick) + "."
+    entry    := ema15
+else if fresh or math.abs(ext) <= atEma
+    status   := "ENTER"
+    headline := "Grade " + grade + " " + dTxt + " setup, " + str.tostring(aligned) + "/6 aligned with 15m — enter now."
+    trigger  := "High-confluence entry (" + (fresh ? "fresh EMA cross " + str.tostring(barsSinceCross) + " bar(s) ago" : "pullback to EMA15") + ")."
+else
+    status   := "WAIT"
+    headline := "Grade " + grade + " " + dTxt + " setup, but no fresh trigger yet."
+    trigger  := "Enter on the next EMA cross or a dip to EMA15 " + str.tostring(ema15, format.mintick) + "."
+    entry    := ema15
+
+// market gate — never enter straight into an index moving against the trade
+if status == "ENTER" and mktAgainst and useMktGate
+    status   := "WAIT"
+    headline := "Index is moving " + (mktBias > 0 ? "up" : "down") + " — against this " + (isLong ? "long" : "short") + "."
+    trigger  := "Wait for the index to turn, or stand aside."
+
+// time-of-day gate — opening 15 min is noise, the last half hour has no runway
+f_hhmm(int mins) =>
+    h = math.floor(mins / 60)
+    m = mins % 60
+    (h < 10 ? "0" : "") + str.tostring(h, "#") + ":" + (m < 10 ? "0" : "") + str.tostring(m, "#")
+
+hm    = hour * 60 + minute
+phase = hm < openEnd ? "open" : hm >= lateStart ? "late" : "core"
+if useTimeGate and status == "ENTER" and phase == "open"
+    status   := "WAIT"
+    headline := "Opening 15 minutes — let the auction settle before entering."
+    trigger  := "Re-check after " + f_hhmm(openEnd) + "."
+else if useTimeGate and status == "ENTER" and phase == "late"
+    status   := "AVOID"
+    headline := "Too late in the session for a fresh intraday entry."
+    trigger  := "No new positions this close to the close."
+
+// ───────────────────────────────────────────────────── levels (1R/2R/3R)
+risk = atrStop * atr
+stop = isLong ? entry - risk : entry + risk
+tp1  = isLong ? entry + risk     : entry - risk
+tp2  = isLong ? entry + 2 * risk : entry - 2 * risk
+tp3  = isLong ? entry + 3 * risk : entry - 3 * risk
+
+// ─────────────────────────────────────────────────────────────── plotting
+plot(ema9,  "EMA 9",  color = color.new(color.teal, 0),   linewidth = 1)
+plot(ema15, "EMA 15", color = color.new(color.orange, 0), linewidth = 1)
+plot(vwap,  "VWAP",   color = color.new(color.gray, 0),   linewidth = 1)
+
+isEnter = status == "ENTER"
+bgcolor(isEnter ? color.new(isLong ? color.green : color.red, 88) : na, title = "ENTER tint")
+
+plotshape(showMarks and isEnter and isLong and not isEnter[1], "ENTER long", shape.triangleup,
+     location.belowbar, color.new(color.green, 0), size = size.small, text = "ENTER")
+plotshape(showMarks and isEnter and not isLong and not isEnter[1], "ENTER short", shape.triangledown,
+     location.abovebar, color.new(color.red, 0), size = size.small, text = "ENTER")
+
+var line lnEntry = na
+var line lnStop  = na
+var line lnTp1   = na
+var line lnTp2   = na
+var line lnTp3   = na
+if barstate.islast and showLevels
+    line.delete(lnEntry)
+    line.delete(lnStop)
+    line.delete(lnTp1)
+    line.delete(lnTp2)
+    line.delete(lnTp3)
+    if status != "AVOID"
+        l = bar_index - 30
+        r = bar_index + 12
+        lnEntry := line.new(l, entry, r, entry, color = color.blue,  width = 2)
+        lnStop  := line.new(l, stop,  r, stop,  color = color.red,   style = line.style_dashed)
+        lnTp1   := line.new(l, tp1,   r, tp1,   color = color.green, style = line.style_dotted)
+        lnTp2   := line.new(l, tp2,   r, tp2,   color = color.green, style = line.style_dotted)
+        lnTp3   := line.new(l, tp3,   r, tp3,   color = color.green, style = line.style_dotted)
+
+// ────────────────────────────────────────────────────────────── the panel
+f_row(t, i, k, v, col) =>
+    table.cell(t, 0, i, k, text_color = color.gray,  text_size = size.small, text_halign = text.align_left)
+    table.cell(t, 1, i, v, text_color = col,         text_size = size.small, text_halign = text.align_right)
+
+var table panel = table.new(position.top_right, 2, 12, border_width = 1)
+if barstate.islast and showPanel
+    stCol = status == "ENTER" ? (isLong ? color.green : color.red) : status == "WAIT" ? color.orange : color.gray
+    table.cell(panel, 0, 0, "ATLAS " + (isLong ? "CALL" : "PUT"), text_color = color.white,
+         bgcolor = color.new(color.black, 20), text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 0, status, text_color = color.white, bgcolor = color.new(stCol, 20),
+         text_size = size.small, text_halign = text.align_right)
+    f_row(panel, 1, "Grade",      grade + "  (" + str.tostring(aligned) + "/6)", color.white)
+    // raw model probability first (this is what the web app shows), then the
+    // market/relative-strength adjusted number
+    f_row(panel, 2, "Win prob",   str.tostring(math.round(winProb * 100)) + "%  (ctx " +
+         str.tostring(math.round(confidence * 100)) + "%)", color.white)
+    f_row(panel, 3, "15m trend",  htfBias > 0 ? "up" : htfBias < 0 ? "down" : "flat",
+         htfOk ? color.green : color.red)
+    f_row(panel, 4, "ADX",        str.tostring(adx, "#") + (trending ? "  trending" : "  choppy"),
+         trending ? color.white : color.red)
+    f_row(panel, 5, "Index",      str.tostring(mktChg, "+#.##") + "%",
+         mktAligned ? color.green : mktAgainst ? color.red : color.gray)
+    f_row(panel, 6, "Rel str",    str.tostring(rs, "+#.##") + "%",
+         rsOk ? color.green : rsBad ? color.red : color.gray)
+    f_row(panel, 7, "Session",    phase, phase == "core" ? color.white : color.orange)
+    f_row(panel, 8, "Entry",      str.tostring(entry, format.mintick), color.white)
+    f_row(panel, 9, "Stop",       str.tostring(stop, format.mintick) +
+         "  (" + str.tostring(math.abs(entry - stop) / close * 100, "#.##") + "%)", color.red)
+    f_row(panel, 10, "Targets",   str.tostring(tp1, format.mintick) + " / " +
+         str.tostring(tp2, format.mintick) + " / " + str.tostring(tp3, format.mintick), color.green)
+    f_row(panel, 11, "Why",       trigger, color.gray)
+
+// ────────────────────────────────────────────────────────────────── alerts
+alertcondition(status == "ENTER" and isLong and status[1] != "ENTER",
+     "Atlas ENTER long (CALL)", "Atlas: ENTER long on {{ticker}} at {{close}}")
+alertcondition(status == "ENTER" and not isLong and status[1] != "ENTER",
+     "Atlas ENTER short (PUT)", "Atlas: ENTER short on {{ticker}} at {{close}}")

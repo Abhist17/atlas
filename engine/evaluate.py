@@ -55,6 +55,7 @@ from data.yf_client import yfc, _normalise
 from engine.alpha_signal import (ADX_MIN, AT_EMA, EXTENDED, FRESH_BARS,
                                  GRADE_MIN, LATE_ENTRY_CUTOFF, OPEN_NOISE_END,
                                  _ATR_STOP)
+from engine.directional import add_opening_range
 from engine.indicators import add_indicators
 from utils.logger import get_logger
 
@@ -119,25 +120,15 @@ def _fetch_index(ticker: str, days: int) -> pd.DataFrame | None:
 
 
 # ------------------------------------------------------- causal derivations
-def _causal_opening_range(df: pd.DataFrame, day: pd.Series) -> tuple[np.ndarray, np.ndarray]:
-    """Opening-range high/low that only ever looks backward.
+def _causal_opening_range(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """Opening-range high/low arrays, straight from the production function.
 
-    `engine.directional.add_opening_range` broadcasts the session-wide max of
-    the first OR_BARS bars to every bar of the day — inside those first bars
-    that is lookahead. Here the range expands bar by bar and freezes once the
-    window closes.
+    `engine.directional.add_opening_range` is causal (expanding inside the
+    window, frozen after), so the replay and the live engine now share one
+    implementation and cannot silently diverge.
     """
-    g = df.groupby(day)
-    bar_no = g.cumcount().to_numpy()
-    in_win = bar_no < OR_BARS
-    hi = df["high"].where(in_win)
-    lo = df["low"].where(in_win)
-    orh = hi.groupby(day).cummax().to_numpy()
-    orl = lo.groupby(day).cummin().to_numpy()
-    # after the window, carry the frozen range forward
-    s_h = pd.Series(orh).groupby(day.to_numpy()).ffill().to_numpy()
-    s_l = pd.Series(orl).groupby(day.to_numpy()).ffill().to_numpy()
-    return s_h, s_l
+    d = add_opening_range(df, opening_bars=OR_BARS)
+    return d["or_high"].to_numpy(), d["or_low"].to_numpy()
 
 
 def _htf_bias_series(df: pd.DataFrame) -> np.ndarray:
@@ -269,6 +260,28 @@ def _horizon_outcome(high, low, close, entry, risk, is_long, session_id,
     return r, ok
 
 
+# ------------------------------------------------------------------ decision
+def status_cascade(trending, htf, htf_ok, aligned, vwap_ok, ext, fresh,
+                   mkt_against, phase) -> np.ndarray:
+    """Vectorised twin of `alpha_signal._decide` plus the two context gates.
+
+    Order matters and must match production exactly: the regime/HTF/confluence
+    rejections come first, then the timing rules, then the market and
+    time-of-day overrides that can only ever downgrade an ENTER.
+    `tests/test_gate_parity.py` drives both implementations over random inputs
+    and fails if they ever disagree.
+    """
+    status = np.select(
+        [~trending, htf == 0, ~htf_ok, aligned < GRADE_MIN, ~vwap_ok,
+         ext >= EXTENDED, fresh | (np.abs(ext) <= AT_EMA)],
+        ["AVOID", "AVOID", "AVOID", "AVOID", "WAIT", "WAIT", "ENTER"],
+        default="WAIT")
+    status = np.where((status == "ENTER") & mkt_against, "WAIT", status)
+    status = np.where((status == "ENTER") & (phase == "open"), "WAIT", status)
+    status = np.where((status == "ENTER") & (phase == "late"), "AVOID", status)
+    return status
+
+
 # ------------------------------------------------------------------ replay
 def replay_symbol(symbol: str, df: pd.DataFrame, idx: dict) -> pd.DataFrame | None:
     """One symbol -> a frame of per-bar decisions, gates and outcomes."""
@@ -279,7 +292,7 @@ def replay_symbol(symbol: str, df: pd.DataFrame, idx: dict) -> pd.DataFrame | No
     day = ts.dt.date
     ind = ind.assign(_day=day)
 
-    orh, orl = _causal_opening_range(ind, ind["_day"])
+    orh, orl = _causal_opening_range(ind)
     htf = _htf_bias_series(ind)
 
     ok = (~ind[["ema9", "ema15", "ema50", "atr", "vwap", "rsi", "adx"]]
@@ -350,15 +363,8 @@ def replay_symbol(symbol: str, df: pd.DataFrame, idx: dict) -> pd.DataFrame | No
     phase = np.where(hm < _OPEN_MIN, "open",
                      np.where(hm >= _LATE_MIN, "late", "core"))
 
-    status = np.select(
-        [~trending, htf == 0, ~htf_ok, aligned < GRADE_MIN, ~vwap_ok,
-         ext >= EXTENDED, fresh | (np.abs(ext) <= AT_EMA)],
-        ["AVOID", "AVOID", "AVOID", "AVOID", "WAIT", "WAIT", "ENTER"],
-        default="WAIT")
-    # market gate, then time-of-day gate
-    status = np.where((status == "ENTER") & mkt_against, "WAIT", status)
-    status = np.where((status == "ENTER") & (phase == "open"), "WAIT", status)
-    status = np.where((status == "ENTER") & (phase == "late"), "AVOID", status)
+    status = status_cascade(trending, htf, htf_ok, aligned, vwap_ok, ext, fresh,
+                            mkt_against, phase)
 
     grade = np.select([aligned >= 6, aligned == 5, aligned == 4],
                       ["A+", "A", "B"], default="C")

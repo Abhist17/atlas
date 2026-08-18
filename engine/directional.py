@@ -101,13 +101,20 @@ def explain_score(row: pd.Series) -> list[dict]:
 
 
 def add_opening_range(df: pd.DataFrame, opening_bars: int = 6) -> pd.DataFrame:
-    """Add per-session opening-range high/low (first `opening_bars` bars)."""
+    """Add per-session opening-range high/low (first `opening_bars` bars).
+
+    Causal by construction: inside the opening window the range *expands* bar by
+    bar, and once the window closes it freezes and carries forward. A session-wide
+    `transform("max")` would be simpler but hands the first `opening_bars` bars
+    the high of bars that have not happened yet — a lookahead that silently
+    inflates every opening-range breakout vote in the first half hour.
+    """
     out = df.copy()
     day = pd.to_datetime(out["timestamp"]).dt.date
-    bar_no = out.groupby(day).cumcount()
-    mask = bar_no < opening_bars
-    out["or_high"] = out["high"].where(mask).groupby(day).transform("max")
-    out["or_low"] = out["low"].where(mask).groupby(day).transform("min")
+    in_window = out.groupby(day).cumcount() < opening_bars
+    # expanding high/low within the window, then frozen for the rest of the day
+    out["or_high"] = out["high"].where(in_window).groupby(day).cummax().groupby(day).ffill()
+    out["or_low"] = out["low"].where(in_window).groupby(day).cummin().groupby(day).ffill()
     return out
 
 

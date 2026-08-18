@@ -9,6 +9,8 @@ Note: yfinance intraday history is limited (~60 days for >=2m bars, ~7 days for
 """
 from __future__ import annotations
 
+import time
+
 import pandas as pd
 import yfinance as yf
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -20,6 +22,19 @@ log = get_logger("data.yf_client")
 
 _OHLC_COLS = ["timestamp", "open", "high", "low", "close", "volume"]
 _INTERVAL_MAP = {1: "1m", 5: "5m", 15: "15m", 30: "30m", 60: "60m"}
+
+# Intraday caches must expire: a live signal computed on yesterday's parquet is
+# worse than no signal at all. Short enough that a 5-min bar is never more than
+# one poll stale, long enough that a page refresh does not hit yfinance.
+INTRADAY_CACHE_TTL = 60.0     # seconds
+
+
+def _cache_fresh(path, ttl: float) -> bool:
+    """True if `path` exists and was written less than `ttl` seconds ago."""
+    try:
+        return (time.time() - path.stat().st_mtime) < ttl
+    except OSError:
+        return False
 
 
 def _to_yf_symbol(symbol: str) -> str:
@@ -55,11 +70,12 @@ class YFClient:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8))
     def intraday(
-        self, symbol: str, days: int = 5, interval: int = 5, use_cache: bool = True
+        self, symbol: str, days: int = 5, interval: int = 5, use_cache: bool = True,
+        ttl: float = INTRADAY_CACHE_TTL,
     ) -> pd.DataFrame:
         yf_interval = _INTERVAL_MAP.get(interval, "5m")
         cache = CACHE_DIR / f"yf_{symbol}_{days}d_{yf_interval}.parquet"
-        if use_cache and cache.exists():
+        if use_cache and _cache_fresh(cache, ttl):
             return pd.read_parquet(cache)
 
         raw = yf.download(

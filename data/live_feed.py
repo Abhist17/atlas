@@ -31,6 +31,8 @@ _HEADERS = {
     "Referer": "https://www.nseindia.com/get-quotes/equity",
 }
 
+_IST = "Asia/Kolkata"
+
 _session: requests.Session | None = None
 _session_ts = 0.0
 _ltp_cache: dict[str, tuple[float, float]] = {}   # symbol -> (ts, ltp)
@@ -71,10 +73,30 @@ def live_ltp(symbol: str) -> float | None:
     return None
 
 
-def get_bars(symbol: str, days: int = 5, interval: int = 5) -> dict:
-    """OHLC bars for charts + indicators, with the latest bar patched to live LTP.
+def bar_is_forming(last_ts, interval: int) -> bool:
+    """Is the bar stamped `last_ts` still being built right now?
 
-    Returns {ok, symbol, bars: DataFrame, ltp, is_live, source}.
+    A bar stamped T on an `interval`-minute series closes at T + interval. Any
+    consumer that makes a decision on a bar which has not closed yet is reading a
+    number that can still change — the signal repaints.
+    """
+    ts = pd.Timestamp(last_ts)
+    if ts.tz is not None:
+        now = pd.Timestamp.now(tz=ts.tz)
+    else:   # NSE bars are IST; compare in the same wall clock
+        now = pd.Timestamp.now(tz=_IST).tz_localize(None)
+    return now < ts + pd.Timedelta(minutes=interval)
+
+
+def get_bars(symbol: str, days: int = 5, interval: int = 5) -> dict:
+    """OHLC bars for charts + indicators, with the forming bar patched to live LTP.
+
+    Returns {ok, symbol, bars: DataFrame, ltp, is_live, forming, source}.
+
+    `forming` says whether the final row is an unclosed bar. Only that bar is
+    ever patched with the live price: overwriting a *closed* candle rewrites
+    history, and every indicator downstream then disagrees with the backtest.
+    Consumers that gate on indicators must decide on closed bars only.
     """
     symbol = symbol.upper()
     df = yfc.intraday(symbol, days=days, interval=interval)
@@ -82,16 +104,18 @@ def get_bars(symbol: str, days: int = 5, interval: int = 5) -> dict:
         return {"ok": False, "symbol": symbol, "error": "No bar data."}
 
     df = df.copy().reset_index(drop=True)
+    forming = bar_is_forming(df["timestamp"].iloc[-1], interval)
     ltp = live_ltp(symbol)
     is_live = ltp is not None
     if not is_live:
         ltp = float(df["close"].iloc[-1])
-    else:
-        # patch the last candle so the chart's freshest bar reflects the live price
+    elif forming:
+        # patch the forming candle so the chart's freshest bar tracks the live price
         i = df.index[-1]
         df.at[i, "close"] = ltp
         df.at[i, "high"] = max(float(df.at[i, "high"]), ltp)
         df.at[i, "low"] = min(float(df.at[i, "low"]), ltp)
 
     return {"ok": True, "symbol": symbol, "bars": df, "ltp": round(float(ltp), 2),
-            "is_live": is_live, "source": "NSE live" if is_live else "yfinance (delayed)"}
+            "is_live": is_live, "forming": bool(forming),
+            "source": "NSE live" if is_live else "yfinance (delayed)"}

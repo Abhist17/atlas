@@ -56,6 +56,19 @@ The **entry-timing** layer then decides *when*:
 Stop-loss and targets are always measured from the **planned entry price**, not just the
 current price.
 
+### Decisions are made on closed bars
+
+Every gate is evaluated on the last **closed** bar. A forming candle's close — and so its
+EMAs, MACD, RSI, ADX and every confluence vote — keeps moving until the bar ends, so a
+signal taken from it repaints: an `ENTER` on screen can quietly become an `AVOID` before
+the candle finishes. The live price is still used for the one thing it is actually good
+for, the fill you would get (`entry`), and the response reports `bar_time`, `signal_px`
+and `drift_atr` so you can see how far price has run since the decision bar closed.
+
+The same discipline applies to the opening range, which expands bar by bar inside the
+window instead of being backfilled with the window's final high — otherwise the breakout
+vote reads the future for the first half hour of every session.
+
 ---
 
 ## Architecture
@@ -91,6 +104,27 @@ flowchart TD
     OC --> API
     API --> UI
 ```
+
+---
+
+## Tests
+
+```bash
+pytest
+```
+
+The suite is offline (no yfinance, no NSE) and exists to pin down the invariants that are
+easy to break silently:
+
+- **No repaint** — the same closed history, with and without a wild in-progress bar glued
+  on, must produce an identical decision.
+- **No lookahead** — recomputing the opening range on a truncated frame must not change
+  any earlier value.
+- **Gate parity** — `engine/evaluate.py` reimplements the gate cascade vectorised for
+  speed; it is driven against the live `_decide` over thousands of random gate states, so
+  the published hit rates can never end up describing an engine nobody trades.
+- **Fresh data** — the intraday parquet cache expires, because a signal computed on
+  yesterday's bars is worse than no signal.
 
 ---
 

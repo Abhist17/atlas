@@ -15,6 +15,13 @@ market better (short-term direction is noise); it improves entries by being
 
 Output matches the dashboard signal schema, with two extra fields: `grade` and
 `confluence` (aligned votes / total). Honest note stays: selectivity, not prophecy.
+
+Every gate is evaluated on the last **closed** bar. The forming bar's close, and
+therefore its EMAs, MACD, RSI, ADX and votes, keep changing until the bar ends —
+deciding on it makes the signal repaint, and it is also not what
+`engine/evaluate.py` measures. The live price is still used for what it is
+genuinely good for: the fill you would actually get (`entry`) and the distances
+derived from it.
 """
 from __future__ import annotations
 
@@ -47,7 +54,10 @@ def compute_signal(symbol: str, interval: int = 5) -> dict:
     feed = get_bars(symbol, days=5, interval=interval)
     if not feed.get("ok"):
         return {"symbol": symbol, "ok": False, "error": feed.get("error", "No data.")}
-    ind = add_opening_range(add_indicators(feed["bars"])).dropna(
+    bars = feed["bars"]
+    if feed.get("forming") and len(bars) > 1:
+        bars = bars.iloc[:-1]             # decide on closed bars only — no repaint
+    ind = add_opening_range(add_indicators(bars)).dropna(
         subset=["ema9", "ema15", "atr", "vwap"]).reset_index(drop=True)
     if len(ind) < 25:
         return {"symbol": symbol, "ok": False, "error": "Not enough clean bars."}
@@ -55,6 +65,8 @@ def compute_signal(symbol: str, interval: int = 5) -> dict:
     htf_bias = _htf_bias(symbol)          # +1 up / -1 down / 0 neutral (15m)
     last = ind.iloc[-1]
     ltp = float(feed["ltp"])
+    # px = the price every gate is judged on: the last closed bar's close
+    px = float(last["close"])
     atr = float(last["atr"])
     ema9, ema15 = float(last["ema9"]), float(last["ema15"])
     vwap = float(last["vwap"])
@@ -75,15 +87,15 @@ def compute_signal(symbol: str, interval: int = 5) -> dict:
     # --- confluence votes (each +1 if it confirms the candidate direction) ---
     orh = float(last.get("or_high", np.nan))
     orl = float(last.get("or_low", np.nan))
-    votes = _votes(long, ema9, ema15, macd_h, rsi, ltp, vwap, vol_x, orh, orl)
+    votes = _votes(long, ema9, ema15, macd_h, rsi, px, vwap, vol_x, orh, orl)
     aligned = sum(1 for v in votes if v["ok"])
     total = len(votes)
     grade = "A+" if aligned >= 6 else "A" if aligned == 5 else "B" if aligned == 4 else "C"
 
     htf_ok = (htf_bias > 0 and long) or (htf_bias < 0 and not long)
     trending = adx >= ADX_MIN
-    vwap_ok = (ltp > vwap) if long else (ltp < vwap)
-    ext = ((ltp - ema15) / atr) if long else ((ema15 - ltp) / atr)
+    vwap_ok = (px > vwap) if long else (px < vwap)
+    ext = ((px - ema15) / atr) if long else ((ema15 - px) / atr)
 
     # broad-market / sector context (NIFTY or BANKNIFTY)
     mkt = get_context(symbol)
@@ -93,8 +105,8 @@ def compute_signal(symbol: str, interval: int = 5) -> dict:
 
     # relative strength: stock's intraday move vs the market (excess return)
     _tday = ind[ind["timestamp"].astype(str).str[:10] == str(last["timestamp"])[:10]]
-    day_open = float(_tday["open"].iloc[0]) if not _tday.empty else ltp
-    stock_chg = (ltp / day_open - 1) * 100 if day_open else 0.0
+    day_open = float(_tday["open"].iloc[0]) if not _tday.empty else px
+    stock_chg = (px / day_open - 1) * 100 if day_open else 0.0
     rs = round(stock_chg - mkt["chg"], 2)                 # + = outperforming
     rs_ok = (rs > 0.15) if long else (rs < -0.15)          # a leader in its direction
     rs_bad = (rs < -0.15) if long else (rs > 0.15)         # a laggard (against)
@@ -108,7 +120,7 @@ def compute_signal(symbol: str, interval: int = 5) -> dict:
     # calibrated win probability from the learned model (if trained)
     ema50 = float(last["ema50"]) if not np.isnan(last.get("ema50", np.nan)) else ema15
     win_prob = win_probability({
-        "close": ltp, "ema9": ema9, "ema15": ema15, "ema50": ema50, "atr": atr,
+        "close": px, "ema9": ema9, "ema15": ema15, "ema50": ema50, "atr": atr,
         "macd_hist": macd_h, "rsi": rsi, "vwap": vwap, "adx": adx, "vol_x": vol_x})
     if win_prob is not None:
         # market/relative-strength context nudges the calibrated probability
@@ -120,24 +132,18 @@ def compute_signal(symbol: str, interval: int = 5) -> dict:
 
     status, headline, trigger, entry = _decide(
         long, htf_bias, htf_ok, trending, adx, aligned, grade, fresh, bars_since,
-        cross_dir, vwap_ok, ext, ltp, ema15, vwap)
+        cross_dir, vwap_ok, ext, px, ema15, vwap)
 
-    # market gate: never ENTER straight into a broad market moving against you
-    if status == "ENTER" and mkt_against:
-        status = "WAIT"
-        headline = f"{mkt['name']} is moving {'up' if mkt_dir>0 else 'down'} — against this {('long' if long else 'short')}."
-        trigger = f"Wait for {mkt['name']} to turn, or stand aside."
-
-    # time-of-day gate: the opening 15 min is noise, the last half hour has no runway
     phase, phase_txt = _session_phase(last["timestamp"])
-    if status == "ENTER" and phase == "open":
-        status = "WAIT"
-        headline = "Opening 15 minutes — let the auction settle before entering."
-        trigger = f"Re-check after {OPEN_NOISE_END[0]:02d}:{OPEN_NOISE_END[1]:02d}."
-    elif status == "ENTER" and phase == "late":
-        status = "AVOID"
-        headline = "Too late in the session for a fresh intraday entry."
-        trigger = "No new positions this close to the close."
+    status, headline, trigger = _context_gates(
+        status, headline, trigger, long, mkt["name"], mkt_dir, mkt_against, phase)
+
+    # The gates were judged on the closed bar; the fill happens at the live price.
+    # For an ENTER-now call, measure stop and targets from the price you can
+    # actually get, and report how far price has drifted since that bar closed.
+    if status == "ENTER":
+        entry = ltp
+    drift = round((ltp - px) / atr, 2) if atr else 0.0
 
     risk = _ATR_STOP * atr
     if long:
@@ -181,6 +187,8 @@ def compute_signal(symbol: str, interval: int = 5) -> dict:
 
     return {
         "symbol": symbol, "ok": True, "ltp": round(ltp, 2),
+        "signal_px": round(px, 2), "bar_time": str(last["timestamp"]),
+        "bar_closed": not bool(feed.get("forming")), "drift_atr": drift,
         "bias": bias, "option": opt, "confidence": confidence,
         "grade": grade, "confluence": f"{aligned}/{total}",
         "atr": round(atr, 2), "atr_pct": round(atr / ltp * 100, 2),
@@ -201,7 +209,8 @@ def compute_signal(symbol: str, interval: int = 5) -> dict:
         "win_prob": win_prob,
         "note": (("Win prob from a model trained on historical outcomes · "
                   if win_prob is not None else "")
-                 + f"Grade {grade} · {aligned}/{total} aligned · 15m + {mkt['name']} filtered · not a prediction"),
+                 + f"Grade {grade} · {aligned}/{total} aligned · 15m + {mkt['name']} filtered · "
+                 + f"decided on the {str(last['timestamp'])[11:16]} closed bar · not a prediction"),
     }
 
 
@@ -245,15 +254,15 @@ def _session_phase(ts) -> tuple[str, str]:
     return "core", f"{hm[0]:02d}:{hm[1]:02d} — core session"
 
 
-def _votes(long, ema9, ema15, macd_h, rsi, ltp, vwap, vol_x, orh, orl):
+def _votes(long, ema9, ema15, macd_h, rsi, px, vwap, vol_x, orh, orl):
     up = long
     ema_ok = (ema9 >= ema15) if up else (ema9 < ema15)
     macd_ok = (macd_h > 0) if up else (macd_h < 0)
     rsi_ok = (rsi >= 52) if up else (rsi <= 48)
-    vwap_ok = (ltp > vwap) if up else (ltp < vwap)
+    vwap_ok = (px > vwap) if up else (px < vwap)
     vol_ok = vol_x >= 1.0
     if not np.isnan(orh):
-        or_ok = (ltp >= orh) if up else (ltp <= orl)
+        or_ok = (px >= orh) if up else (px <= orl)
         or_txt = (f"{'Above' if up else 'Below'} opening range — "
                   f"{'breakout' if or_ok else 'inside range'}")
     else:
@@ -265,31 +274,32 @@ def _votes(long, ema9, ema15, macd_h, rsi, ltp, vwap, vol_x, orh, orl):
          "text": f"MACD histogram {'positive' if macd_h > 0 else 'negative'} ({macd_h:+.2f})"},
         {"name": "RSI", "ok": rsi_ok, "text": f"RSI {rsi:.0f}"},
         {"name": "VWAP", "ok": vwap_ok,
-         "text": f"Price {'above' if ltp > vwap else 'below'} VWAP ({vwap:.2f})"},
+         "text": f"Price {'above' if px > vwap else 'below'} VWAP ({vwap:.2f})"},
         {"name": "Volume", "ok": vol_ok, "text": f"Volume {vol_x:.1f}x average"},
         {"name": "Opening range", "ok": or_ok, "text": or_txt},
     ]
 
 
 def _decide(long, htf_bias, htf_ok, trending, adx, aligned, grade, fresh,
-            bars_since, cross_dir, vwap_ok, ext, ltp, ema15, vwap):
+            bars_since, cross_dir, vwap_ok, ext, px, ema15, vwap):
+    """Gate cascade. `px` is the last closed bar's close — never the live tick."""
     d = "up" if long else "down"
 
     if not trending:
         return ("AVOID", f"Choppy tape (ADX {adx:.0f}) — no clean trend to trade.",
-                "Wait for ADX above 20.", ltp)
+                "Wait for ADX above 20.", px)
     if htf_bias == 0:
         return ("AVOID", "15-min trend is flat — no directional edge.",
-                "Wait for the higher timeframe to pick a side.", ltp)
+                "Wait for the higher timeframe to pick a side.", px)
     if not htf_ok:
         return ("AVOID", f"Setup fights the 15-min trend ({'up' if htf_bias>0 else 'down'}).",
-                "Only trade with the higher timeframe. Stand aside.", ltp)
+                "Only trade with the higher timeframe. Stand aside.", px)
     if aligned < GRADE_MIN:
         return ("AVOID", f"Only {aligned}/6 factors aligned (grade {grade}) — too weak.",
-                "Wait for a higher-confluence setup.", ltp)
+                "Wait for a higher-confluence setup.", px)
     if not vwap_ok:
         return ("WAIT", f"Grade {grade} {d} setup, but price is on the wrong side of VWAP.",
-                f"Enter once price reclaims VWAP {vwap:.2f}.", ltp)
+                f"Enter once price reclaims VWAP {vwap:.2f}.", px)
     if ext >= EXTENDED:
         return ("WAIT", f"Grade {grade} but extended {ext:.1f} ATR from EMA15 — don't chase.",
                 f"Wait for a pullback toward EMA15 {ema15:.2f}.", ema15)
@@ -297,9 +307,34 @@ def _decide(long, htf_bias, htf_ok, trending, adx, aligned, grade, fresh,
         why = (f"fresh EMA cross {cross_dir} {bars_since} bar(s) ago"
                if fresh else "pullback to EMA15")
         return ("ENTER", f"Grade {grade} {d} setup, {aligned}/6 aligned with 15m — enter now.",
-                f"High-confluence entry ({why}).", ltp)
+                f"High-confluence entry ({why}).", px)
     return ("WAIT", f"Grade {grade} {d} setup, but no fresh trigger yet.",
             f"Enter on the next EMA cross or a dip to EMA15 {ema15:.2f}.", ema15)
+
+
+def _context_gates(status, headline, trigger, long, mkt_name, mkt_dir,
+                   mkt_against, phase):
+    """Market and time-of-day overrides. These can only downgrade an ENTER.
+
+    Kept separate from `_decide` so `engine.evaluate.status_cascade` can mirror
+    the exact same ordering, and so the parity test can drive both.
+    """
+    if status != "ENTER":
+        return status, headline, trigger
+    # never ENTER straight into a broad market moving against you
+    if mkt_against:
+        return ("WAIT",
+                f"{mkt_name} is moving {'up' if mkt_dir > 0 else 'down'} — "
+                f"against this {'long' if long else 'short'}.",
+                f"Wait for {mkt_name} to turn, or stand aside.")
+    # the opening 15 min is noise, the last half hour has no runway
+    if phase == "open":
+        return ("WAIT", "Opening 15 minutes — let the auction settle before entering.",
+                f"Re-check after {OPEN_NOISE_END[0]:02d}:{OPEN_NOISE_END[1]:02d}.")
+    if phase == "late":
+        return ("AVOID", "Too late in the session for a fresh intraday entry.",
+                "No new positions this close to the close.")
+    return status, headline, trigger
 
 
 def _bars_since_cross(sign):

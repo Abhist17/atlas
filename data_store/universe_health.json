@@ -1,22 +1,26 @@
 {
   "GUJGASLTD": {
-    "failures": 1,
-    "last_failure": "2026-08-19T14:05:27",
+    "dead_since": "2026-08-19T14:11:11",
+    "failures": 3,
+    "last_failure": "2026-08-19T14:11:11",
     "reason": "no intraday data"
   },
   "LTIM": {
-    "failures": 1,
-    "last_failure": "2026-08-19T14:05:28",
+    "dead_since": "2026-08-19T14:11:14",
+    "failures": 3,
+    "last_failure": "2026-08-19T14:11:14",
     "reason": "no intraday data"
   },
   "PEL": {
-    "failures": 1,
-    "last_failure": "2026-08-19T14:05:29",
+    "dead_since": "2026-08-19T14:11:16",
+    "failures": 3,
+    "last_failure": "2026-08-19T14:11:16",
     "reason": "no intraday data"
   },
   "TATAMOTORS": {
-    "failures": 1,
-    "last_failure": "2026-08-19T14:05:30",
+    "dead_since": "2026-08-19T14:11:18",
+    "failures": 3,
+    "last_failure": "2026-08-19T14:11:18",
     "reason": "no intraday data"
   }
 }

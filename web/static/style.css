@@ -278,3 +278,35 @@ tr.itm .ce-side{background:var(--up-bg)} tr.itm-pe .pe-side{background:var(--dow
 .devcode b{color:var(--ink); font-variant-numeric:tabular-nums; letter-spacing:.12em; font-size:15px}
 #code{letter-spacing:.35em; text-align:center; font-size:18px; font-variant-numeric:tabular-nums}
 .disclaimer{margin-top:22px; font-size:11px; color:var(--faint); line-height:1.6}
+
+/* ---------- track record ---------- */
+.tr-h2{display:flex; align-items:center; justify-content:space-between;
+  border-top:1px solid var(--line); margin-top:8px}
+.tr-refresh{font-size:10px; text-transform:uppercase; letter-spacing:.06em;
+  color:var(--sub); background:var(--bg); border:1px solid var(--line-2);
+  border-radius:6px; padding:3px 9px; cursor:pointer}
+.tr-refresh:hover{color:var(--on-ink); background:var(--ink); border-color:var(--ink)}
+.tr-tiles{display:grid; grid-template-columns:repeat(4,1fr); gap:7px; padding:4px 16px 12px}
+.tr-tile{border:1px solid var(--line); border-radius:8px; background:var(--raise);
+  padding:8px 9px; display:flex; flex-direction:column; gap:3px}
+.tr-k{font-size:9.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--faint)}
+.tr-v{font-family:var(--mono); font-size:14px; font-weight:600; color:var(--ink)}
+.tr-v.up{color:var(--up)} .tr-v.down{color:var(--down)}
+.tr-rows{border-top:1px solid var(--line)}
+.tr-row{display:grid; grid-template-columns:1fr auto auto auto auto; gap:9px;
+  align-items:center; padding:8px 16px; border-bottom:1px solid var(--line);
+  font-size:12px}
+.tr-row:hover{background:var(--raise)}
+.tr-sym{font-weight:600; color:var(--ink); display:flex; flex-direction:column}
+.tr-sym em{font-style:normal; font-size:10px; color:var(--faint); font-family:var(--mono)}
+.tr-side{font-size:10px; letter-spacing:.05em}
+.tr-side.up{color:var(--up)} .tr-side.down{color:var(--down)}
+.tr-grade{font-size:10px; color:var(--sub); font-family:var(--mono)}
+.tr-out{font-size:9.5px; font-weight:600; letter-spacing:.05em; padding:2px 7px;
+  border-radius:999px; border:1px solid var(--line-2); color:var(--sub)}
+.tr-out.tp{color:var(--up); background:var(--up-bg); border-color:transparent}
+.tr-out.sl{color:var(--down); background:var(--down-bg); border-color:transparent}
+.tr-out.to{color:var(--sub); background:var(--soft); border-color:transparent}
+.tr-r{font-family:var(--mono); font-size:12.5px; min-width:52px; text-align:right;
+  color:var(--faint)}
+.tr-r.up{color:var(--up)} .tr-r.down{color:var(--down)}

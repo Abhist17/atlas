@@ -32,6 +32,8 @@ judgment.
   momentum, opening-range, volume).
 - **Option chain** — live NSE chain (with a Black-Scholes fallback), so you can pick a strike.
 - **Option projection** — click a Call/Put to see its premium projected at the stop and targets.
+- **Track record** — every call the app served is journaled and scored against what price
+  actually did next, so the hit rate on screen is measured, not remembered.
 
 ---
 
@@ -71,6 +73,32 @@ vote reads the future for the first half hour of every session.
 
 ---
 
+## The track record is measured, not remembered
+
+Every signal the dashboard serves is written to `data_store/live_signals.parquet` — the
+status, the entry, the stop and the targets that were on screen at that moment. One row
+per `(symbol, bar_time)`, so refreshing the page mid-bar cannot inflate the log with the
+same decision twice.
+
+`engine/signal_review.py` then scores each `ENTER` against the bars that followed it. Two
+rules keep the number honest rather than flattering:
+
+- **Only bars after the decision bar count.** Scoring the decision bar itself would be
+  reading the data the decision was made from.
+- **When one bar touches both the stop and a target, the stop wins.** Intraday OHLC does
+  not record which came first, and assuming the good one is exactly how a backtest ends up
+  describing a strategy nobody could have traded.
+
+A call still open at 15:15 is closed there at that bar's close (`TIMEOUT`) — this is an
+intraday tool, so a position you had to flatten is not a pending winner. The panel reports
+hit rate, expectancy in R, and MFE/MAE per call.
+
+```
+GET /api/journal    →  {summary: {win_rate, expectancy_r, total_r, ...}, rows: [...]}
+```
+
+---
+
 ## Architecture
 
 ```mermaid
@@ -99,10 +127,17 @@ flowchart TD
     NSE --> OC
     YF --> OC
 
+    subgraph Record
+        JRN[live_journal.py<br/>every call, as served]
+        REV[signal_review.py<br/>score vs. what happened]
+    end
+
     SCR --> API
     LVL --> API
     OC --> API
     API --> UI
+    LVL --> JRN --> REV --> API
+    YF --> REV
 ```
 
 ---
@@ -125,6 +160,12 @@ easy to break silently:
   the published hit rates can never end up describing an engine nobody trades.
 - **Fresh data** — the intraday parquet cache expires, because a signal computed on
   yesterday's bars is worse than no signal.
+- **Pessimistic scoring** — a bar that touches both the stop and a target scores as a
+  stop, bars at or before the decision bar never score, and an open call is never counted
+  as a win. These are the assumptions that decide whether the published hit rate means
+  anything.
+- **No double-counting** — the same `(symbol, bar_time)` cannot enter the journal twice,
+  so re-opening the page mid-bar doesn't quietly pad the sample.
 
 ---
 
@@ -153,7 +194,7 @@ atlas/
   engine/        indicators, directional score, entry levels, screener
   web/           FastAPI app, auth, templates, static
   backtest/      backtest engines, metrics, optimizer
-  storage/       trade + signal journal (Parquet)
+  storage/       trade + live signal journal (Parquet)
   config/        settings (.env driven)
 ```
 

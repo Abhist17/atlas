@@ -153,7 +153,35 @@ async def api_chain(symbol: str, expiry: str | None = None,
 @app.get("/api/levels")
 async def api_levels(symbol: str, email: str = Depends(require_user)):
     from engine.alpha_signal import compute_signal
-    return JSONResponse(compute_signal(symbol))
+    from storage.live_journal import record
+    sig = compute_signal(symbol)
+    record(sig)          # journal what we said, so it can be scored later
+    return JSONResponse(sig)
+
+
+@app.get("/api/journal")
+async def api_journal(interval: int = 5, limit: int = 200,
+                      email: str = Depends(require_user)):
+    """Every ENTER call we made, scored against what price did next."""
+    from engine.signal_review import review
+    data = review(interval=interval, limit=limit)
+    rows = sorted(data["rows"], key=lambda r: str(r.get("bar_time")), reverse=True)
+    return JSONResponse({
+        "summary": data["summary"],
+        "logged": data["logged"],
+        "rows": [{k: _clean(v) for k, v in r.items()} for r in rows[:limit]],
+    })
+
+
+def _clean(v):
+    """NaN is not JSON. Null is."""
+    try:
+        import math
+        if isinstance(v, float) and math.isnan(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return v
 
 
 @app.get("/api/chart")

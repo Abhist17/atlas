@@ -6,7 +6,7 @@
   <title>Atlas</title>
   <script>try{document.documentElement.setAttribute('data-theme',localStorage.getItem('atlas_theme')||'light');}catch(e){}</script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230a0a0a'/><path d='M7 24 L16 7 L25 24' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/><path d='M11.5 18 H20.5' stroke='%23fff' stroke-width='3' stroke-linecap='round'/></svg>">
-  <link rel="stylesheet" href="/static/style.css?v=3">
+  <link rel="stylesheet" href="/static/style.css?v=4">
 </head>
 <body>
   <header>
@@ -91,6 +91,14 @@
         </div>
         <div class="proj-rows" id="pjRows"></div>
         <div class="proj-note">Premiums estimated with a ~0.5 ATM delta. Actual fills vary with IV &amp; time decay.</div>
+      </div>
+
+      <!-- ============ TRACK RECORD ============ -->
+      <h2 class="tr-h2">Track record
+        <button id="trRefresh" class="tr-refresh" title="Re-score journaled calls">Refresh</button>
+      </h2>
+      <div id="trBody">
+        <div class="proj-empty">Loading the journal…</div>
       </div>
     </div>
   </div>
@@ -377,8 +385,53 @@
     rowsEl.innerHTML=html;
   }
 
+  // ---------------- track record ----------------
+  // Every ENTER the app served is journaled, then scored against the bars that
+  // followed. This is the real hit rate, not the remembered one.
+  const R = v => (v>=0?"+":"\u2212")+Math.abs(v).toFixed(2)+"R";
+  async function loadJournal(){
+    const el=document.getElementById("trBody");
+    let d;
+    try{ d=await (await fetch("/api/journal?limit=40")).json(); }
+    catch(e){ el.innerHTML=`<div class="proj-empty">Journal unavailable.</div>`; return; }
+    const s=d.summary||{};
+    if(!d.logged){
+      el.innerHTML=`<div class="proj-empty">Nothing journaled yet. Every signal you open
+        is recorded here and scored once the bars that follow it close.</div>`;
+      return;
+    }
+    if(!s.scored){
+      el.innerHTML=`<div class="proj-empty">${d.logged} call(s) journaled,
+        ${s.open||0} still running \u2014 no closed outcome to score yet.</div>`;
+      return;
+    }
+    const tiles=[
+      ["Hit rate", s.win_rate+"%", s.win_rate>=50?"up":"down"],
+      ["Expectancy", R(s.expectancy_r), s.expectancy_r>=0?"up":"down"],
+      ["Total", R(s.total_r), s.total_r>=0?"up":"down"],
+      ["Scored", s.scored+"", ""],
+    ].map(([k,v,c])=>`<div class="tr-tile"><span class="tr-k">${k}</span>
+        <span class="tr-v ${c}">${v}</span></div>`).join("");
+    const badge=o=>o.startsWith("TP")?"tp":o==="STOP"?"sl":o==="TIMEOUT"?"to":"op";
+    const list=(d.rows||[]).map(r=>`
+      <div class="tr-row">
+        <span class="tr-sym">${r.symbol}<em>${String(r.bar_time).slice(11,16)}</em></span>
+        <span class="tr-side ${r.bias==="LONG"?"up":"down"}">${r.bias}</span>
+        <span class="tr-grade">${r.grade||""}</span>
+        <span class="tr-out ${badge(r.outcome)}">${r.outcome}</span>
+        <span class="tr-r ${r.r==null?"":(r.r>=0?"up":"down")}">${r.r==null?"\u2014":R(r.r)}</span>
+      </div>`).join("");
+    el.innerHTML=`<div class="tr-tiles">${tiles}</div><div class="tr-rows">${list}</div>
+      <div class="proj-note">${s.target_hits} target hit(s) \u00b7 ${s.stopped} stopped \u00b7
+        ${s.timed_out} squared off \u00b7 ${s.open} running.
+        Stops win same-bar ties, so these are the pessimistic numbers.</div>`;
+  }
+  document.getElementById("trRefresh").addEventListener("click", loadJournal);
+
   loadScreen();
+  loadJournal();
   setInterval(loadScreen, 120000);
+  setInterval(loadJournal, 300000);
   </script>
 </body>
 </html>

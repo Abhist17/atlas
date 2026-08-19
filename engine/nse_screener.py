@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from data.nse_universe import FNO_UNIVERSE
+from data.universe_health import record_failure, record_success, tradable
 from data.yf_client import yfc
 from engine.directional import _dir_score, add_opening_range
 from engine.indicators import add_indicators
@@ -65,7 +65,10 @@ def _row(symbol: str, df: pd.DataFrame) -> dict | None:
 def screen_nse(interval: int = 5, symbols: list[str] | None = None,
                progress=None) -> pd.DataFrame:
     """Screen the F&O universe. `progress` is an optional callback(frac, text)."""
-    symbols = symbols or FNO_UNIVERSE
+    # Skip symbols that have repeatedly returned nothing — delistings, renames
+    # and demergers leave dead tickers in the static list, and each one costs a
+    # network round trip per scan for a row that can never appear.
+    symbols = symbols or tradable()
     tickers = [f"{s}.NS" for s in symbols]
     if progress:
         progress(0.1, f"Fetching {len(tickers)} stocks…")
@@ -79,6 +82,9 @@ def screen_nse(interval: int = 5, symbols: list[str] | None = None,
         r = _row(sym, df) if df is not None else None
         if r:
             rows.append(r)
+            record_success(sym)
+        elif df is None or df.empty:
+            record_failure(sym, "no intraday data")
 
     out = pd.DataFrame(rows)
     if not out.empty:
@@ -92,6 +98,8 @@ def screen_nse(interval: int = 5, symbols: list[str] | None = None,
         out["rs"] = (out["chg_%"] - nifty).round(2)
         out["rs_rank"] = (out["rs"].rank(pct=True) * 100).round(0).astype(int)
     log.info("NSE screen: %d/%d stocks analysed", len(out), len(symbols))
+    if len(out) < len(symbols):
+        log.info("%d symbol(s) returned no data this pass", len(symbols) - len(out))
     return out
 
 

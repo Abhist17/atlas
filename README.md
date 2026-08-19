@@ -80,6 +80,13 @@ status, the entry, the stop and the targets that were on screen at that moment. 
 per `(symbol, bar_time)`, so refreshing the page mid-bar cannot inflate the log with the
 same decision twice.
 
+Journaling only what you click would make the track record a sample of your *attention* —
+you click what looks interesting, so the log inherits every bias you were trying to check
+for. So `engine/sweeper.py` also runs on a timer inside the app: each pass it screens the
+universe, takes the strongest candidates by absolute conviction, and journals every
+`ENTER` whether or not anyone is watching. Set `ATLAS_SWEEP=0` to turn it off, or run it
+as its own process with `python -m engine.sweeper`.
+
 `engine/signal_review.py` then scores each `ENTER` against the bars that followed it. Two
 rules keep the number honest rather than flattering:
 
@@ -95,6 +102,46 @@ hit rate, expectancy in R, and MFE/MAE per call.
 
 ```
 GET /api/journal    →  {summary: {win_rate, expectancy_r, total_r, ...}, rows: [...]}
+```
+
+---
+
+## Access control
+
+Atlas logs in by emailed one-time code. When SMTP isn't configured it falls back to
+printing the code on the verify page, which is convenient on localhost and an
+authentication bypass anywhere else — the code is the only credential, so showing it to
+whoever asks lets anyone sign in as anyone.
+
+So the code is shown **only when the server is bound to loopback**. Tell Atlas where it is
+bound with `ATLAS_BIND_HOST` (the `python -m web.app` entrypoint reads it and binds
+there). On any other address you need one of:
+
+| Setting | Effect |
+| ------- | ------ |
+| `SMTP_HOST` / `SMTP_USER` / `SMTP_PASS` | codes are emailed, never displayed |
+| `ATLAS_ALLOWED_EMAILS` | comma-separated list of who may sign in at all |
+
+With neither, a network-bound Atlas refuses logins and says why, rather than quietly
+serving an open door. Sessions are signed with an on-disk secret (`ATLAS_SECRET_KEY` to
+override) and the OTP expires in 10 minutes after at most 5 attempts.
+
+---
+
+## The universe prunes itself
+
+NSE's F&O list changes; a static Python list does not. Symbols get delisted, renamed and
+demerged — `TATAMOTORS` is the live example, and every scan spent a network round trip on
+a ticker that can never return a row.
+
+`data/universe_health.py` tracks failures in `data_store/universe_health.json`. A symbol
+is dropped only after **3 consecutive** failures, so one flaky afternoon at the data
+provider can't shrink the universe; the mark expires after **7 days**, so anything that
+recovers comes back; and a single success clears the record immediately.
+
+```bash
+python -m data.universe_health              # what's excluded and why
+python -m data.universe_health --validate   # re-check every symbol now
 ```
 
 ---
@@ -128,6 +175,7 @@ flowchart TD
     YF --> OC
 
     subgraph Record
+        SWP[sweeper.py<br/>journal ENTERs on a timer]
         JRN[live_journal.py<br/>every call, as served]
         REV[signal_review.py<br/>score vs. what happened]
     end
@@ -137,6 +185,7 @@ flowchart TD
     OC --> API
     API --> UI
     LVL --> JRN --> REV --> API
+    SCR --> SWP --> JRN
     YF --> REV
 ```
 
@@ -173,13 +222,23 @@ easy to break silently:
 
 ```bash
 python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt -r requirements-dev.txt
 
+cp .env.example .env        # then edit it
 uvicorn web.app:app --reload --port 8000
 ```
 
-Then open **http://127.0.0.1:8000** and sign up. To reach it from another device on your
-network, run with `--host 0.0.0.0`.
+Then open **http://127.0.0.1:8000** and sign in — the login code is printed on the page.
+
+To reach it from another device on your network, set `ATLAS_ALLOWED_EMAILS` (or SMTP) in
+`.env` first, then:
+
+```bash
+ATLAS_BIND_HOST=0.0.0.0 python -m web.app
+```
+
+Without one of those, Atlas will refuse the login rather than show the code to the
+network. See [Access control](#access-control).
 
 > The NSE option-chain API works from an Indian residential IP. When it is unreachable,
 > Atlas falls back to a theoretical Black-Scholes chain so strikes always render.
@@ -202,7 +261,14 @@ atlas/
 
 ## Tech
 
-Python, pandas / numpy, pandas-ta, FastAPI, Jinja2. Free data (yfinance + NSE public API).
+Python 3.12+, pandas / numpy, pandas-ta, FastAPI, Jinja2. Free data (yfinance + NSE public
+API). Dependencies are pinned in `requirements.txt` — pandas-ta tracks pandas and numpy
+closely, and an unpinned install has silently broken the indicator stack before. CI runs
+the suite on 3.12 and 3.13.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
 
 ---
 

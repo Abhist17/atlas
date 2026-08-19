@@ -132,6 +132,52 @@ def smtp_configured() -> bool:
     return bool(os.getenv("SMTP_HOST") and os.getenv("SMTP_USER") and os.getenv("SMTP_PASS"))
 
 
+# ---------------------------------------------------------------- who may log in
+def allowlist() -> set[str]:
+    """Emails permitted to log in (ATLAS_ALLOWED_EMAILS, comma-separated).
+
+    Empty set means "no allowlist configured" — which is only safe on loopback,
+    see `login_is_open()`.
+    """
+    raw = os.getenv("ATLAS_ALLOWED_EMAILS", "")
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+
+def email_allowed(email: str) -> bool:
+    allowed = allowlist()
+    return True if not allowed else email.strip().lower() in allowed
+
+
+def login_is_open() -> bool:
+    """True when anyone who can reach this server can log in as anyone.
+
+    That is the case when the OTP is not emailed (so the code is shown on the
+    verify page) and no allowlist restricts who may ask for one. It is a normal,
+    convenient state on localhost and a wide-open door on a LAN or public bind,
+    so callers use it to decide whether to refuse to serve the code.
+    """
+    return not smtp_configured() and not allowlist()
+
+
+def bound_publicly() -> bool:
+    """Is the server listening on something other than loopback?
+
+    Set by the entrypoint, since the app itself cannot see uvicorn's bind host.
+    """
+    host = os.getenv("ATLAS_BIND_HOST", "127.0.0.1").strip()
+    return host not in ("127.0.0.1", "localhost", "::1", "")
+
+
+def dev_code_permitted() -> bool:
+    """May we print the OTP on screen?
+
+    Only when the request cannot have come from anywhere but this machine. On a
+    public bind the convenience becomes an authentication bypass, so it is
+    withheld and the operator has to configure SMTP or an allowlist.
+    """
+    return not smtp_configured() and not bound_publicly()
+
+
 def generate_otp(email: str) -> str:
     """Create + store a 6-digit code for this email. Returns the code."""
     email = email.strip().lower()
@@ -143,8 +189,8 @@ def generate_otp(email: str) -> str:
 
 
 def dev_code(email: str) -> str | None:
-    """The plain code, exposed only when SMTP isn't configured (local dev)."""
-    if smtp_configured():
+    """The plain code, shown only when nobody off this machine could read it."""
+    if not dev_code_permitted():
         return None
     rec = _otps.get(email.strip().lower())
     return rec["plain"] if rec and time.time() <= rec["expires"] else None
@@ -152,6 +198,8 @@ def dev_code(email: str) -> str | None:
 
 def verify_otp(email: str, code: str) -> bool:
     email = email.strip().lower()
+    if not email_allowed(email):
+        return False
     rec = _otps.get(email)
     if not rec or time.time() > rec["expires"] or rec["attempts"] >= OTP_MAX_ATTEMPTS:
         _otps.pop(email, None)

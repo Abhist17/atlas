@@ -5,6 +5,7 @@ Run:  uvicorn web.app:app --reload --port 8000
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Form, Request
@@ -17,6 +18,14 @@ from web.data_service import chain, expiries, get_screen, refresh
 
 BASE = Path(__file__).parent
 app = FastAPI(title="Atlas")
+
+# Refusing to hand out the OTP is only half the fix; the operator also has to be
+# told why login stopped working, or they will assume the app is broken.
+OPEN_LOGIN_ERROR = (
+    "This server is reachable from the network, so Atlas won't show login codes on "
+    "screen — that would let anyone sign in as anyone. Set SMTP_HOST / SMTP_USER / "
+    "SMTP_PASS to email codes, or ATLAS_ALLOWED_EMAILS to limit who can sign in."
+)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 
@@ -65,6 +74,12 @@ async def login(request: Request, email: str = Form(...)):
     if not auth.valid_email(email):
         return templates.TemplateResponse(request, "login.html",
                                           {"error": "Enter a valid email address."})
+    if not auth.email_allowed(email):
+        # Same message either way — don't tell a stranger which emails exist.
+        return templates.TemplateResponse(request, "login.html",
+                                          {"error": "That email isn't allowed to sign in."})
+    if auth.bound_publicly() and auth.login_is_open():
+        return templates.TemplateResponse(request, "login.html", {"error": OPEN_LOGIN_ERROR})
     code = auth.generate_otp(email)
     sent, info = auth.send_otp_email(email, code)   # real email if SMTP set, else dev
     if auth.smtp_configured() and not sent:
@@ -82,7 +97,7 @@ async def verify_page(request: Request, email: str = ""):
         return RedirectResponse("/login", status_code=303)
     return templates.TemplateResponse(request, "verify.html", {
         "email": email, "error": None,
-        "dev_code": auth.dev_code(email),           # shown only when SMTP not set up
+        "dev_code": auth.dev_code(email),           # withheld unless loopback-only
         "emailed": auth.smtp_configured(),
     })
 
@@ -215,6 +230,61 @@ def _nan(v):
         return True
 
 
+# ---------------------------------------------------------------- background sweep
+async def _sweep_loop() -> None:
+    """Journal ENTER signals across the universe while the app is up.
+
+    Runs in-process so `uvicorn web.app:app` is the only command you need. The
+    sweep is blocking (network + pandas), so it goes to a worker thread rather
+    than stalling the event loop and with it every request the dashboard makes.
+    """
+    import asyncio
+    import logging
+
+    from engine.sweeper import DEFAULT_LIMIT, sweep
+
+    logger = logging.getLogger("atlas.sweep")
+    every = int(os.getenv("ATLAS_SWEEP_MINUTES", "5")) * 60
+    limit = int(os.getenv("ATLAS_SWEEP_LIMIT", str(DEFAULT_LIMIT)))
+    logger.info("Background sweep on: top %d every %dm "
+                "(ATLAS_SWEEP=0 to disable)", limit, every // 60)
+    while True:
+        try:
+            await asyncio.to_thread(sweep, limit)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:                  # noqa: BLE001 — the loop must survive
+            logger.warning("Sweep failed: %s", e)
+        await asyncio.sleep(every)
+
+
+@app.on_event("startup")
+async def _start_sweep() -> None:
+    if os.getenv("ATLAS_SWEEP", "1") != "1":
+        return
+    import asyncio
+    app.state.sweep_task = asyncio.create_task(_sweep_loop())
+
+
+@app.on_event("shutdown")
+async def _stop_sweep() -> None:
+    task = getattr(app.state, "sweep_task", None)
+    if task:
+        task.cancel()
+
+
+@app.on_event("startup")
+async def _warn_if_open() -> None:
+    """Say it out loud at boot, not only when a login fails."""
+    import logging
+    if auth.bound_publicly() and auth.login_is_open():
+        logging.getLogger("atlas").warning(
+            "Atlas is bound to a non-loopback address with no SMTP and no "
+            "ATLAS_ALLOWED_EMAILS — logins are blocked. %s", OPEN_LOGIN_ERROR)
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("web.app:app", host="0.0.0.0", port=8000, reload=False)
+    host = os.getenv("ATLAS_BIND_HOST", "127.0.0.1")
+    uvicorn.run("web.app:app", host=host, port=int(os.getenv("ATLAS_PORT", "8000")),
+                reload=False)

@@ -1,0 +1,22 @@
+{
+  "GUJGASLTD": {
+    "failures": 1,
+    "last_failure": "2026-08-19T14:05:27",
+    "reason": "no intraday data"
+  },
+  "LTIM": {
+    "failures": 1,
+    "last_failure": "2026-08-19T14:05:28",
+    "reason": "no intraday data"
+  },
+  "PEL": {
+    "failures": 1,
+    "last_failure": "2026-08-19T14:05:29",
+    "reason": "no intraday data"
+  },
+  "TATAMOTORS": {
+    "failures": 1,
+    "last_failure": "2026-08-19T14:05:30",
+    "reason": "no intraday data"
+  }
+}

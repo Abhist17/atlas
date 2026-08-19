@@ -1,31 +1,39 @@
-# Core data / compute
-pandas
-numpy
-pyarrow
-pandas-ta
-numba
+# Pinned to what Atlas is actually tested against. pandas-ta in particular
+# tracks pandas/numpy closely, and an unpinned install has silently broken the
+# indicator stack before.
+#
+# Python 3.12+
 
-# Broker + data (Dhan)
-dhanhq
-requests
-tenacity
-websockets
+# --- Core data / compute -------------------------------------------------
+pandas==3.0.3
+numpy==2.2.6
+pyarrow==24.0.0
+pandas-ta==0.4.71b0
+numba==0.61.2
 
-# Scheduling
-APScheduler
+# --- Market data ---------------------------------------------------------
+yfinance==1.5.1
+requests==2.34.2
+tenacity==9.1.4
 
-# Web app + dashboard
-fastapi
-uvicorn
-jinja2
-itsdangerous
-python-multipart
-streamlit
-plotly
+# --- Broker (Dhan) -------------------------------------------------------
+dhanhq==2.2.0
+websockets==16.1.1
 
-# Config
-pyyaml
-python-dotenv
+# --- Scheduling ----------------------------------------------------------
+APScheduler==3.11.3
 
-# Tests
-pytest
+# --- Web app -------------------------------------------------------------
+fastapi==0.139.2
+uvicorn==0.51.0
+jinja2==3.1.6
+itsdangerous==2.2.0
+python-multipart==0.0.32
+
+# --- Streamlit dashboard (dashboard/app.py) ------------------------------
+streamlit==1.59.2
+plotly==6.9.0
+
+# --- Config --------------------------------------------------------------
+pyyaml==6.0.3
+python-dotenv==1.2.2
